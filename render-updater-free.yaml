@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: ai-bridge-updater-free
+    runtime: docker
+    dockerfilePath: ./Dockerfile.updater
+    plan: free
+    autoDeployTrigger: "off"
+    healthCheckPath: /health
+    envVars:
+      - key: BRIDGE_STATE_MODE
+        value: postgres
+      - key: BRIDGE_STATE_DATABASE_URL
+        sync: false
+      - key: BRIDGE_UPDATER_DATA_DIR
+        value: /tmp/ai-bridge-updater
+      - key: BRIDGE_UPDATER_TARGET_REPO
+        value: mktminhqpbga-glitch/AI-Br
+      - key: BRIDGE_UPDATER_TARGET_BRANCH
+        value: main
+      - key: BRIDGE_UPDATER_TARGET_SERVICE_ID
+        sync: false
+      - key: BRIDGE_UPDATER_PUBLIC_URL
+        sync: false
+      - key: BRIDGE_UPDATER_PASSWORD
+        sync: false
+      - key: BRIDGE_UPDATER_RENDER_KEY
+        sync: false

@@ -60,7 +60,7 @@ function publicMedia({ id, kind, mime_type, size, sha256 }) {
 
 export function createMediaBridge({
   store, clients, providerLabels, providerForModel, createPrompt, complete, sendJson, sendError,
-  legacyBusy, legacyQueueLength, dispatch, providerForUrl, timeoutMs = 35 * 60_000, cloud,
+  legacyBusy, legacyQueueLength, dispatch, providerForUrl, timeoutMs = 35 * 60_000, cloud, flushState,
 }) {
   const queue = [];
   const tasks = new Map();
@@ -184,7 +184,7 @@ export function createMediaBridge({
     if (!tab || !sameTarget(tab, target)) throw stale();
     if (provider && provider !== tab.provider) throw new BridgeError(409, "TAB_PROVIDER_MISMATCH", "The selected tab does not match the model.");
     if (tab.busy || unresolved.has(documentKey(target))
-      || active && tabKey(active.task.target) === tabKey(target)
+      || active && active !== job && tabKey(active.task.target) === tabKey(target)
       || queue.some((other) => other !== job && tabKey(other.task.target) === tabKey(target))) throw busy();
     const outputSupported = kind === "none" ? tab.outputKinds.includes("text")
       : kind === "auto" ? tab.outputKinds.length > 0 : tab.outputKinds.includes(kind);
@@ -243,7 +243,11 @@ export function createMediaBridge({
     if (!tab.outputKinds.some((output) => allowed.includes(output))) throw unsupported();
     if (queue.length + legacyQueueLength() >= MAX_QUEUE) throw new BridgeError(429, "QUEUE_FULL", "The bridge queue is full.");
     if (ids.length || kind !== "none" && tab.outputKinds.some((output) => output !== "text")) store.requireValidator();
-    readInputs(ids, owner);
+    let inputSize = 0;
+    for (const id of ids) {
+      const input = store.inputMetadata(id, owner);
+      if (!input || (inputSize += input.size) > MAX_INPUT_TOTAL) throw invalidInput();
+    }
     const now = new Date().toISOString();
     const task = {
       task_id: randomUUID(), client_request_id: requestId, request_hash: requestHash, owner,
@@ -300,48 +304,47 @@ export function createMediaBridge({
     return complete(response, task.model, task.content, tools, task.media, task.stream);
   }
 
-  function readInputs(ids, owner, queued = false) {
-    let size = 0;
-    return ids.map((id) => {
-      const input = store.readInput(id, owner, queued);
-      if (!input || (size += input.metadata.size) > MAX_INPUT_TOTAL) throw invalidInput();
-      return input;
-    });
-  }
-
   function startNext() {
     if (active || legacyBusy()) return true;
-    while (queue.length) {
-      const job = queue.shift();
-      try {
-        const { client, tab } = resolveTarget(job.task.target, job.task.provider, job.task.media_kind, job.task.input_images.length > 0, job);
-        const policy = cloud?.modelForPayload({ model: job.task.model, target: job.task.target });
-        if (policy && (job.task.input_images.length && !policy.inputImages
-          || job.task.media_kind !== "auto" && !policy.kinds.includes(job.task.media_kind === "none" ? "text" : job.task.media_kind))) throw unsupported();
-        const output = tab.outputKinds.filter((kind) => job.task.allowed.includes(kind) && (!policy || policy.kinds.includes(kind)));
-        if (!output.length) throw unsupported();
-        const input = readInputs(job.task.input_images, job.task.owner, true).map(({ metadata, bytes }) => ({ ...metadata, data: bytes.toString("base64") }));
-        job.task = transition(job.task, "running");
-        job.client = client;
-        job.outputKinds = output;
-        job.attachments = input.map(({ id, sha256 }) => ({ id, sha256 }));
-        job.files = new Map();
-        job.bytes = 0;
-        job.timer = setTimeout(() => settle(job, "unknown", uncertain(504)), timeoutMs);
-        active = job;
-        client.send({
-          type: "bridge:run", id: job.task.task_id, provider: job.task.provider, target: job.task.target, model: job.task.model,
-          media_kind: job.task.media_kind === "auto" && output.length === 1 ? (output[0] === "text" ? "none" : output[0]) : job.task.media_kind,
-          prompt: job.prompt, input_images: input, request_id: job.task.request_id, trace_id: job.task.trace_id,
-        });
-        cloud?.audit(job.task, "dispatched");
-        return true;
-      } catch (error) {
-        settle(job, active === job ? "unknown" : "failed",
-          active === job ? uncertain() : error, null, false);
+    const job = queue.shift();
+    if (!job) return false;
+    active = job;
+    dispatchJob(job);
+    return true;
+  }
+
+  async function dispatchJob(job) {
+    try {
+      const input = [];
+      for (const id of job.task.input_images) {
+        const file = await store.readInput(id, job.task.owner, true);
+        if (active !== job) return;
+        if (!file) throw invalidInput();
+        input.push({ ...file.metadata, data: file.bytes.toString("base64") });
       }
+      const { client, tab } = resolveTarget(job.task.target, job.task.provider, job.task.media_kind, input.length > 0, job);
+      const policy = cloud?.modelForPayload({ model: job.task.model, target: job.task.target });
+      if (policy && (input.length && !policy.inputImages
+        || job.task.media_kind !== "auto" && !policy.kinds.includes(job.task.media_kind === "none" ? "text" : job.task.media_kind))) throw unsupported();
+      const output = tab.outputKinds.filter((kind) => job.task.allowed.includes(kind) && (!policy || policy.kinds.includes(kind)));
+      if (!output.length) throw unsupported();
+      job.task = transition(job.task, "running");
+      job.client = client;
+      job.outputKinds = output;
+      job.attachments = input.map(({ id, sha256 }) => ({ id, sha256 }));
+      job.files = new Map();
+      job.bytes = 0;
+      job.timer = setTimeout(() => settle(job, "unknown", uncertain(504)), timeoutMs);
+      client.send({
+        type: "bridge:run", id: job.task.task_id, provider: job.task.provider, target: job.task.target, model: job.task.model,
+        media_kind: job.task.media_kind === "auto" && output.length === 1 ? (output[0] === "text" ? "none" : output[0]) : job.task.media_kind,
+        prompt: job.prompt, input_images: input, request_id: job.task.request_id, trace_id: job.task.trace_id,
+      });
+      cloud?.audit(job.task, "dispatched");
+    } catch (error) {
+      if (active !== job) return;
+      settle(job, job.client ? "unknown" : "failed", job.client ? uncertain() : error);
     }
-    return false;
   }
 
   function verifySubmission(job, message) {
@@ -500,11 +503,10 @@ export function createMediaBridge({
         return sendJson(response, 200, publicTask(task));
       }
       const index = queue.findIndex((job) => job.task.task_id === task.task_id);
-      if (index === -1) throw new BridgeError(409, "TASK_NOT_CANCELLABLE", "Only queued tasks can be cancelled.");
-      const job = queue[index];
-      settle(job, "cancelled", new BridgeError(409, "TASK_CANCELLED", "The task was cancelled before dispatch."), null, false);
-      queue.splice(index, 1);
-      dispatch();
+      let job = index !== -1 ? queue.splice(index, 1)[0] : null;
+      if (active?.task === task && task.status === "queued") job = active;
+      if (!job) throw new BridgeError(409, "TASK_NOT_CANCELLABLE", "Only queued tasks can be cancelled.");
+      settle(job, "cancelled", new BridgeError(409, "TASK_CANCELLED", "The task was cancelled before dispatch."));
       return sendJson(response, 200, publicTask(job.task));
     }
     const fileMatch = pathname.match(/^\/v1\/media\/([^/]+)$/);
@@ -515,6 +517,7 @@ export function createMediaBridge({
         throw new BridgeError(404, "MEDIA_NOT_FOUND", "The requested verified file is unavailable.");
       }
       bindResponse(response, task);
+      if (flushState) await flushState();
       returned(response, task, "downloaded");
       response.writeHead(200, {
         "Content-Type": file.metadata.mime_type,

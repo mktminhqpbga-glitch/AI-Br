@@ -94,10 +94,11 @@ export async function readImageUpload(request) {
 }
 
 export const defaultMediaRetentionHours = 24;
+export const defaultMediaQuotaBytes = 7 * 1024 ** 3;
 export const mediaCleanupPercent = 70;
 
 export function createMediaStore(root, {
-  objects, quota = 2 * 1024 ** 3, ttlMs = defaultMediaRetentionHours * 3_600_000,
+  objects, state, quota = defaultMediaQuotaBytes, ttlMs = defaultMediaRetentionHours * 3_600_000,
 } = {}) {
   const assets = new Map();
   const pins = new Map();
@@ -112,7 +113,14 @@ export function createMediaStore(root, {
     return Math.min(metadata.expires_at, metadata.created_at + ttlMs);
   }
 
-  if (objects) {
+  if (state) {
+    for (const [key, metadata] of state.initial) {
+      const match = /^asset:(input|output):/.exec(key);
+      if (!match) continue;
+      assets.set(metadata.id, { folder: match[1], metadata });
+      used += metadata.size;
+    }
+  } else if (objects) {
     for (const folder of ["input", "output"]) {
       const target = directory(folder);
       for (const name of fs.readdirSync(target).filter((item) => item.endsWith(".json"))) {
@@ -170,10 +178,19 @@ export function createMediaStore(root, {
     const existing = deleting.get(id);
     if (existing) return existing;
     const operation = (async () => {
-      if (objects) await objects.remove(folder, id);
+      const entry = assets.get(id);
+      const key = `asset:${folder}:${id}`;
+      if (state) {
+        state.write(key, null);
+        await state.flush();
+      }
+      try { if (objects) await objects.remove(folder, id); }
+      catch (error) {
+        if (state && entry) state.write(key, entry.metadata);
+        throw error;
+      }
       fs.rmSync(path.join(root, folder, id + ".bin"), { force: true });
       fs.rmSync(path.join(root, folder, id + ".json"), { force: true });
-      const entry = assets.get(id);
       if (entry) used -= entry.metadata.size;
       assets.delete(id);
     })().finally(() => deleting.delete(id));
@@ -202,6 +219,7 @@ export function createMediaStore(root, {
   }
 
   function writeJson(folder, id, value) {
+    if (state) return state.write(folder === "tasks" ? `task:${id}` : `asset:${folder}:${id}`, value);
     const file = path.join(directory(folder), id + ".json");
     const temporary = file + "." + randomUUID() + ".tmp";
     try {
@@ -285,7 +303,7 @@ export function createMediaStore(root, {
       if (objects) {
         assets.set(id, { folder, metadata: record });
         used += bytes.length;
-        if (!input) fs.rmSync(file, { force: true });
+        if (!input || state) fs.rmSync(file, { force: true });
       }
       return input ? metadata : record;
     } catch (error) {
@@ -312,6 +330,22 @@ export function createMediaStore(root, {
     } finally { release(); }
   }
 
+  function inputEntry(id, owner, queued) {
+    const entry = assets.get(id);
+    if (!entry || entry.folder !== "input" || entry.metadata.owner !== owner || deleting.has(id)
+      || expiresAt(entry.metadata) <= Date.now() && !(queued && isPinned(entry))) return null;
+    return entry;
+  }
+
+  function readInput(id, owner, queued) {
+    if (!state) return read("input", id, owner, queued);
+    const entry = inputEntry(id, owner, queued);
+    if (!entry) return null;
+    return objects.get("input", entry.metadata).then((bytes) => (
+      bytesValid(bytes, entry.metadata) ? { bytes, metadata: entry.metadata } : null
+    ));
+  }
+
   function read(folder, id, owner, queued = false) {
     if (typeof id !== "string" || !UUID.test(id)) return null;
     try {
@@ -330,6 +364,7 @@ export function createMediaStore(root, {
   }
 
   function restoreTasks() {
+    if (state) return [...state.initial].filter(([key]) => key.startsWith("task:")).map(([, task]) => task);
     const folder = path.join(root, "tasks");
     if (!fs.existsSync(folder)) return [];
     return fs.readdirSync(folder).filter((name) => name.endsWith(".json")).map((name) => (
@@ -341,7 +376,8 @@ export function createMediaStore(root, {
     requireValidator,
     saveInput: (bytes, mime, owner) => save("input", bytes, mime, undefined, undefined, owner),
     saveOutput: (bytes, mime, sha256, taskId, owner) => save("output", bytes, mime, sha256, taskId, owner),
-    readInput: (id, owner, queued) => read("input", id, owner, queued),
+    readInput,
+    inputMetadata: (id, owner) => (state ? inputEntry(id, owner, false) : read("input", id, owner))?.metadata,
     pin,
     readOutput,
     removeOutput: (id) => remove("output", id),

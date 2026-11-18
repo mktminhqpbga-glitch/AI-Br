@@ -13,7 +13,7 @@ import {
 } from "./prompt-instructions.mjs";
 import { makeAssistantMessage } from "./tool-calls.mjs";
 import { createMediaBridge } from "./media-bridge.mjs";
-import { BridgeError, createMediaStore, defaultMediaRetentionHours } from "./media-store.mjs";
+import { BridgeError, createMediaStore, defaultMediaQuotaBytes, defaultMediaRetentionHours } from "./media-store.mjs";
 import { createCloudControl, errorLayer } from "./cloud-control.mjs";
 
 const MAX_BODY_BYTES = 1_000_000;
@@ -57,6 +57,7 @@ const providerHosts = new Map([
 let mediaBridge;
 let cloud;
 let cloudObjects;
+let sharedState;
 try {
   if (cloudMode) {
     const { createCloudObjects } = await import("./cloud-objects.mjs");
@@ -67,6 +68,24 @@ try {
   process.exit(1);
 }
 
+if (cloudMode && (process.env.BRIDGE_STATE_MODE === "postgres" || process.env.BRIDGE_STATE_DATABASE_URL)) {
+  try {
+    const { openSharedState, namespaceFor } = await import("./shared-state.mjs");
+    sharedState = await openSharedState(process.env.BRIDGE_STATE_DATABASE_URL, namespaceFor(process.env, "gateway"), (error) => {
+      for (const client of clients) client.socket.destroy();
+      if (error.code === "STATE_SUPERSEDED") {
+        log("Replacement gateway took over; draining this instance.");
+        return;
+      }
+      log("Shared state lost; closing this gateway instance.");
+      setTimeout(() => process.exit(1), 200).unref();
+    });
+  } catch {
+    log("Unable to initialize PostgreSQL state. Check the connection and TLS configuration.");
+    process.exit(1);
+  }
+}
+
 function configuredInteger(value, fallback, min, max) {
   const parsed = Number(value ?? fallback);
   if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) throw new Error("Invalid numeric configuration.");
@@ -74,17 +93,17 @@ function configuredInteger(value, fallback, min, max) {
 }
 
 function initializeMediaBridge() {
-  if (cloudMode && !process.env.BRIDGE_DATA_DIR) throw new Error("Configure a persistent data directory.");
+  if (cloudMode && !process.env.BRIDGE_DATA_DIR) throw new Error("Configure BRIDGE_DATA_DIR.");
   const root = path.resolve(process.env.BRIDGE_DATA_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), ".ai-bridge-data"));
   const store = createMediaStore(root, cloudMode ? {
-    objects: cloudObjects,
-    quota: configuredInteger(process.env.BRIDGE_MEDIA_QUOTA_BYTES, 2 * 1024 ** 3, 16 * 1024 ** 2, 100 * 1024 ** 3),
+    objects: cloudObjects, state: sharedState,
+    quota: configuredInteger(process.env.BRIDGE_MEDIA_QUOTA_BYTES, defaultMediaQuotaBytes, 16 * 1024 ** 2, 100 * 1024 ** 3),
     ttlMs: configuredInteger(process.env.BRIDGE_MEDIA_RETENTION_HOURS, defaultMediaRetentionHours, 1, 720) * 3_600_000,
   } : {});
   if (cloudMode) {
     store.requireValidator();
     cloud = createCloudControl({
-      root, publicUrl: process.env.BRIDGE_PUBLIC_URL, updateUrl: process.env.BRIDGE_UPDATE_URL,
+      root, state: sharedState, publicUrl: process.env.BRIDGE_PUBLIC_URL, updateUrl: process.env.BRIDGE_UPDATE_URL,
       adminPassword: process.env.BRIDGE_ADMIN_PASSWORD,
       providerLabels: PROVIDER_DISPLAY_NAMES, sendJson, profileClients: clients, status: () => mediaBridge.snapshot(),
       tasks: () => mediaBridge.listTasks(), mediaUsage: store.usage,
@@ -92,6 +111,7 @@ function initializeMediaBridge() {
   }
   return createMediaBridge({
     store, cloud,
+    flushState: sharedState?.flush,
     clients,
     providerLabels: PROVIDER_DISPLAY_NAMES,
     providerForModel,
@@ -114,7 +134,14 @@ async function handleHttp(request, response) {
 
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (cloudMode) {
-      if (request.method === "GET" && url.pathname === "/health") return sendJson(response, 200, { ok: true });
+      if (request.method === "GET" && url.pathname === "/health") {
+        // The database was checked on startup. Render's probes should not keep it active.
+        if (sharedState?.faultCode === "STATE_UNAVAILABLE") return stateUnavailable(response);
+        const draining = sharedState?.faultCode === "STATE_SUPERSEDED";
+        return writeJsonResponse(response, 200, draining ? { ok: true, draining } : { ok: true });
+      }
+      try { await sharedState?.verify(); }
+      catch { return stateUnavailable(response); }
       return await handleCloudHttp(request, response, url);
     }
     setCorsHeaders(response);
@@ -245,11 +272,13 @@ async function handleCloudHttp(request, response, url) {
   return await mediaBridge.route(request, response, route, readJsonBody);
 }
 
-function handleUpgrade(request, socket, head) {
+async function handleUpgrade(request, socket, head) {
   try {
     if (!cloudMode && !isLoopback(request.socket.remoteAddress)) return rejectUpgrade(socket, 403, "Loopback only");
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname !== "/bridge") return rejectUpgrade(socket, 404, "Not found");
+    await sharedState?.verify();
+    if (socket.destroyed) return;
     const profile = cloudMode ? cloud.socketProfile(request, url) : null;
     if (cloudMode ? !profile : url.searchParams.get("token") !== bridgeToken) return rejectUpgrade(socket, 401, "Invalid bridge credential");
     if (request.headers.upgrade?.toLowerCase() !== "websocket") return rejectUpgrade(socket, 400, "WebSocket required");
@@ -273,6 +302,7 @@ function handleUpgrade(request, socket, head) {
     client.onClose = () => {
       clients.delete(client);
       log(`Chrome extension disconnected (${clients.size} active).`);
+      if (sharedState?.faultCode) return;
       cloud?.chromeEvent(client, "disconnected");
       mediaBridge.closed(client);
       failJobsForClient(client, "The Chrome extension disconnected while the request was running.");
@@ -314,6 +344,7 @@ function listen(localPort, onReady) {
 
 listen(port, () => {
   mediaBridge = initializeMediaBridge();
+  sharedState?.initial.clear();
   if (!configuredPort && !cloudMode) listen(4317);
 });
 
@@ -523,9 +554,11 @@ function finishJob(job) {
 
 function sendCompletion(response, model, text, tools, media, stream = false) {
   if (stream) {
-    const job = { response, id: crypto.randomUUID(), model, text, tools, hasTools: tools.length > 0 };
-    startStreamingResponse(job);
-    return finishStreamingJob(job);
+    if (sharedState) return sharedState.flush().then(
+      () => sendCompletionStream(response, model, text, tools),
+      () => stateUnavailable(response),
+    );
+    return sendCompletionStream(response, model, text, tools);
   }
   const message = media?.length ? { role: "assistant", content: text } : makeAssistantMessage(text, tools);
   sendJson(response, 200, {
@@ -536,6 +569,13 @@ function sendCompletion(response, model, text, tools, media, stream = false) {
     choices: [{ index: 0, message, finish_reason: message.tool_calls ? "tool_calls" : "stop" }],
     ...(media ? { media } : {}),
   });
+}
+
+function sendCompletionStream(response, model, text, tools) {
+  if (response.destroyed) return;
+  const job = { response, id: crypto.randomUUID(), model, text, tools, hasTools: tools.length > 0 };
+  startStreamingResponse(job);
+  finishStreamingJob(job);
 }
 
 function finishStreamingJob(job) {
@@ -693,7 +733,11 @@ function createWebSocketClient(socket) {
     onMessage: null,
     send(value) {
       if (client.closed || socket.destroyed) return;
-      sendWebSocketFrame(socket, JSON.stringify(value));
+      if (sharedState) {
+        sharedState.flush().then(() => {
+          if (!client.closed && !socket.destroyed) sendWebSocketFrame(socket, JSON.stringify(value));
+        }, () => socket.destroy());
+      } else sendWebSocketFrame(socket, JSON.stringify(value));
     },
     consume(chunk) {
       client.buffer = Buffer.concat([client.buffer, chunk]);
@@ -823,8 +867,23 @@ function sendJson(response, status, payload) {
     try { cloud.event("request_error", { request: response.bridgeRequestId, trace: response.bridgeTraceId, code, layer: errorLayer(code) }); }
     catch { console.error("[ai-bridge] Unable to record request error."); }
   }
+  if (sharedState) return sharedState.flush().then(
+    () => writeJsonResponse(response, status, payload),
+    () => stateUnavailable(response),
+  );
+  return writeJsonResponse(response, status, payload);
+}
+
+function writeJsonResponse(response, status, payload) {
+  if (response.destroyed || response.headersSent) return;
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
+}
+
+function stateUnavailable(response) {
+  if (response.destroyed || response.headersSent) return;
+  response.removeHeader("Set-Cookie");
+  return writeJsonResponse(response, 503, { error: { code: "STATE_UNAVAILABLE", message: "Shared state is temporarily unavailable." } });
 }
 
 function sendOpenAiError(response, status, message, code, param = null) {

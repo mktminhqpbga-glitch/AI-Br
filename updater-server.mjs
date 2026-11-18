@@ -34,7 +34,7 @@ async function body(request) {
   throw new UpdaterError(400, "JSON không hợp lệ.");
 }
 
-export function createUpdaterServer(config, updater = createUpdater(config)) {
+export function createUpdaterServer(config, updater = createUpdater(config), state) {
   const sessions = new Map();
   const passwordHash = digest(config.password);
   const expectedHost = new URL(config.origin).host;
@@ -61,7 +61,12 @@ export function createUpdaterServer(config, updater = createUpdater(config)) {
       response.setHeader("Referrer-Policy", "no-referrer");
       response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
       const { method, url } = request;
-      if (method === "GET" && url === "/health") return json(response, 200, { ok: true });
+      if (method === "GET" && url === "/health" && state?.faultCode !== "STATE_UNAVAILABLE") {
+        const draining = state?.faultCode === "STATE_SUPERSEDED";
+        return json(response, 200, draining ? { ok: true, draining } : { ok: true });
+      }
+      try { await state?.verify(); }
+      catch { throw new UpdaterError(503, "Trạng thái cập nhật tạm thời chưa sẵn sàng."); }
       if (request.headers.host !== expectedHost || request.headers["x-forwarded-proto"] !== "https") {
         throw new UpdaterError(421, "Dùng địa chỉ HTTPS của dịch vụ cập nhật.");
       }
@@ -107,7 +112,7 @@ export function createUpdaterServer(config, updater = createUpdater(config)) {
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   try {
     const config = updaterConfig(process.env);
-    if (process.getuid?.() === 0 && config.root === "/var/data/ai-bridge-updater") {
+    if (process.getuid?.() === 0 && ["/var/data/ai-bridge-updater", "/tmp/ai-bridge-updater"].includes(config.root)) {
       fs.mkdirSync(config.root, { mode: 0o700, recursive: true });
       fs.chownSync(config.root, 1000, 1000);
       process.setgroups([]);
@@ -115,9 +120,23 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       process.setuid(1000);
     }
     const port = Number(process.env.PORT ?? 10000);
-    createUpdaterServer(config).listen(port, "0.0.0.0", () => console.log("[ai-bridge-updater] Listening on port " + port));
+    let state;
+    if (process.env.BRIDGE_STATE_MODE === "postgres" || process.env.BRIDGE_STATE_DATABASE_URL) {
+      const { openSharedState, namespaceFor } = await import("./shared-state.mjs");
+      state = await openSharedState(process.env.BRIDGE_STATE_DATABASE_URL, namespaceFor(process.env, "updater"), (error) => {
+        if (error.code === "STATE_SUPERSEDED") {
+          console.log("[ai-bridge-updater] Replacement updater took over; draining this instance.");
+          return;
+        }
+        console.error("[ai-bridge-updater] Shared state lost; closing this instance.");
+        setTimeout(() => process.exit(1), 200).unref();
+      });
+    }
+    const updater = createUpdater(config, fetch, state);
+    state?.initial.clear();
+    createUpdaterServer(config, updater, state).listen(port, "0.0.0.0", () => console.log("[ai-bridge-updater] Listening on port " + port));
   } catch {
-    console.error("[ai-bridge-updater] Check updater credentials, target service and data directory.");
+    console.error("[ai-bridge-updater] Check updater credentials, target service and state storage configuration.");
     process.exitCode = 1;
   }
 }

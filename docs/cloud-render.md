@@ -1,14 +1,16 @@
 # AI Bridge Cloud trên Render
 
-Gateway AI Bridge Cloud chạy trên một Render Web Service. Bảng cập nhật có thể chạy trên dịch vụ Render riêng. HTTPS phục vụ dashboard và API, WSS nhận kết nối chủ động từ tiện ích trên Chrome của người dùng. Render giữ cấu hình, hàng đợi, nhật ký và điều phối. Chrome dùng phiên AI mà người dùng đã đăng nhập. MacFlow chỉ cần địa chỉ API và Bearer key.
+Gateway AI Bridge Cloud chạy trên một Render Web Service. Bảng cập nhật có thể chạy trên dịch vụ Render riêng. HTTPS phục vụ dashboard và API, WSS nhận kết nối chủ động từ tiện ích trên Chrome của người dùng. Gateway điều phối tác vụ và lưu trạng thái trên persistent disk hoặc PostgreSQL, tùy Blueprint. Chrome dùng phiên AI mà người dùng đã đăng nhập. MacFlow chỉ cần địa chỉ API và Bearer key.
 
 ```text
 MacFlow / Toonflow ─── HTTPS ──> AI Bridge trên Render <── WSS ── Chrome Extension
                                      │                              │
-                           Render Disk + kho S3 riêng               └── tab AI
+                           Disk hoặc PostgreSQL + kho S3 riêng       └── tab AI
 ```
 
 ## Cấu hình Render
+
+Các bước dưới đây dùng Blueprint có persistent disk. Với Web Service miễn phí, dùng cấu hình trong mục [Render Free](#render-free).
 
 1. Chuẩn bị một bucket S3 hoặc S3-compatible riêng tư. Chặn truy cập công khai. Cấp quyền đọc, ghi và xóa đối tượng cho riêng prefix của dịch vụ. Dùng endpoint HTTPS kiểu path-style được nhà cung cấp hỗ trợ. Cấu hình lifecycle bucket cho đúng prefix ở mốc dự phòng dài hơn TTL của ứng dụng, ví dụ 2 ngày với mặc định 24 giờ. Lifecycle thu dọn cả đối tượng bị bỏ lại khi tiến trình dừng giữa lúc upload và ghi metadata.
 2. Trong tài khoản Render được cấp quyền, tạo Blueprint từ `render.yaml`. Cấu hình dùng Docker và một instance có persistent disk tại `/var/data/ai-bridge`. Disk giữ file trạng thái, nhật ký, thông tin ghép thiết bị dạng hash, metadata và bản ảnh đầu vào phục vụ hàng đợi. Kho đối tượng riêng lưu cả ảnh đầu vào và media đầu ra. Mỗi deployment dùng một disk riêng, một bucket hoặc prefix riêng, và đúng một instance để bảo toàn idempotency.
@@ -24,17 +26,30 @@ MacFlow / Toonflow ─── HTTPS ──> AI Bridge trên Render <── WSS �
 | `BRIDGE_DATA_DIR` | Đường dẫn disk bền vững, mặc định trong Docker là `/var/data/ai-bridge` |
 | `BRIDGE_S3_ENDPOINT`, `BRIDGE_S3_BUCKET`, `BRIDGE_S3_REGION` | Cấu hình bucket và vùng, dùng `auto` nếu nhà cung cấp yêu cầu |
 | `BRIDGE_S3_ACCESS_KEY_ID`, `BRIDGE_S3_SECRET_ACCESS_KEY` | Khóa quyền tối thiểu dành riêng cho bucket/prefix |
-| `BRIDGE_S3_PREFIX` | Mặc định `ai-br` |
-| `BRIDGE_MEDIA_QUOTA_BYTES` | Mặc định 2 GiB, tính cả ảnh đầu vào và đầu ra |
+| `BRIDGE_S3_PREFIX` | Mặc định `ai-br` cho Starter và `ai-br-free` trong Blueprint Free |
+| `BRIDGE_MEDIA_QUOTA_BYTES` | Mặc định 7 GiB (`7516192768` byte), tính cả ảnh đầu vào và đầu ra |
 | `BRIDGE_MEDIA_RETENTION_HOURS` | Mặc định 24 giờ |
 
-Ứng dụng dọn media hết hạn và xóa các tệp cũ nhất có thể xóa khi dung lượng vượt 70% quota hoặc một lượt lưu mới sẽ đẩy dung lượng vượt mốc này. Tệp tham chiếu của tác vụ đang chờ/chạy và media đang lưu hoặc đọc từ kho được bảo vệ. Nếu phần đang sử dụng vượt ngưỡng dọn, ứng dụng tiếp tục giữ các tệp đó trong giới hạn quota. Chỉ khi thật sự thiếu chỗ ở quota cứng mới trả HTTP 507. Tệp đã dọn sẽ không tải lại được. Nếu một dịch vụ Render đã đặt biến lưu trữ cũ là 168 giờ, đổi biến trên Render thành 24. Sự kiện chẩn đoán dùng cửa sổ 30 ngày. Metadata tác vụ và khóa chống gửi trùng được giữ trên disk để việc tra cứu tiếp tục hoạt động sau restart. Khi cần chuyển dịch vụ, giữ disk và kho đối tượng tương ứng. Dùng các thủ tục backup của Render và kho đã chọn.
+Ứng dụng dọn media hết hạn và xóa các tệp cũ nhất có thể xóa khi dung lượng vượt 70% quota (khoảng 4,9 GiB với cấu hình mặc định) hoặc một lượt lưu mới sẽ đẩy dung lượng vượt mốc này. Tệp tham chiếu của tác vụ đang chờ/chạy và media đang lưu hoặc đọc từ kho được bảo vệ. Nếu phần đang sử dụng vượt ngưỡng dọn, ứng dụng tiếp tục giữ các tệp đó trong giới hạn quota. Chỉ khi thật sự thiếu chỗ ở quota cứng mới trả HTTP 507. Tệp đã dọn sẽ không tải lại được. Cập nhật các biến `BRIDGE_MEDIA_QUOTA_BYTES` và `BRIDGE_MEDIA_RETENTION_HOURS` trên dịch vụ Render hiện có nếu chúng vẫn dùng giá trị cũ. Sự kiện chẩn đoán dùng cửa sổ 30 ngày. Metadata tác vụ và khóa chống gửi trùng được giữ trên disk để việc tra cứu tiếp tục hoạt động sau restart. Khi cần chuyển dịch vụ, giữ disk và kho đối tượng tương ứng. Dùng các thủ tục backup của Render và kho đã chọn.
 
 Để thêm domain riêng, thêm hostname vào Render, cấu hình CNAME trỏ đúng hostname `.onrender.com` của gateway và chờ Render cấp TLS. Trong **Cấu hình API → Tên miền riêng**, tạo challenge, thêm TXT `_aibr-verify.<hostname>` với giá trị hiển thị và bấm xác minh. Sau đó có thể dùng domain đó cho API và làm địa chỉ mặc định khi tải gói tiện ích. Dashboard xác minh TXT và CNAME. Render cấp chứng chỉ. Cấu hình **Origin được phép** riêng cho các frontend cần CORS. Backend MacFlow gọi trực tiếp không cần thêm origin.
 
+## Render Free
+
+1. Chuẩn bị bucket Backblaze B2 riêng tư hoặc một kho S3-compatible khác. Chuẩn bị PostgreSQL bên ngoài Web Service có TLS và còn hoạt động lâu dài, chẳng hạn một database trên Neon. Tài khoản database cần quyền tạo bảng trong schema của ứng dụng. PostgreSQL trên gói Free của Render tự hết hạn sau 30 ngày. [Giới hạn Free của Render](https://render.com/docs/free)
+2. Tạo Blueprint từ cùng repo và đặt **Blueprint Path** thành `render-free.yaml`. Điền URL kết nối trực tiếp tới PostgreSQL vào secret `BRIDGE_STATE_DATABASE_URL`. Điền các biến S3, mật khẩu quản trị và `BRIDGE_PUBLIC_URL` như mục trên. Blueprint chọn `plan: free`, đặt `BRIDGE_STATE_MODE=postgres` và dùng `/tmp/ai-bridge` làm thư mục tạm. Cấp quyền đọc, ghi và xóa đối tượng cho prefix `ai-br-free`.
+3. Sau khi deploy, vào `/health`, đăng nhập dashboard và ghép Chrome. Đặt Base URL của MacFlow thành `https://<hostname>/v1`, rồi cấp Bearer key từ dashboard như ở mục kết nối bên dưới.
+4. Nếu cần cập nhật từ web, tạo Blueprint riêng từ `render-updater-free.yaml`. Dùng cùng database hoặc database riêng. Điền `BRIDGE_STATE_DATABASE_URL` và các biến dành cho updater ở mục tiếp theo. Gán `BRIDGE_UPDATER_TARGET_SERVICE_ID` bằng ID gateway Free và gán `BRIDGE_UPDATE_URL` trên gateway bằng URL HTTPS của updater.
+
+PostgreSQL giữ cấu hình model, thông tin ghép Chrome, API key dạng hash, tác vụ, nhật ký và metadata media. Ảnh đầu vào được đọc từ bucket khi cần gửi sang Chrome. Ảnh và video đầu ra cũng nằm trong bucket, với cùng quota 7 GiB, TTL 24 giờ và quy tắc dọn ở 70%. Khi dịch vụ ngủ, dọn nền sẽ tiếp tục lúc thức dậy. Đặt lifecycle cho prefix của bucket để thu dọn tệp bị bỏ lại sau TTL của gateway. Nếu B2 giữ phiên bản cũ hoặc ẩn, cấu hình lifecycle loại bỏ chúng để hạn chế dung lượng tính trên B2.
+
+Database có thể dùng chung với updater vì hai dịch vụ dùng không gian dữ liệu riêng. Mặc định không gian này dựa trên `RENDER_SERVICE_ID`, nên deploy lại cùng Web Service sẽ đọc đúng trạng thái trước đó. Khi tự host hoặc cần giữ trạng thái qua việc thay thế một Web Service đã chạy với PostgreSQL, có thể đặt `BRIDGE_STATE_NAMESPACE` ổn định. Dùng một gateway hoạt động cho mỗi không gian dữ liệu và dùng prefix B2 riêng cho mỗi gateway. Nếu đang dùng Blueprint có disk, trạng thái cũ vẫn nằm trên disk và chưa tự chuyển sang PostgreSQL. Gateway Free trên một database mới cần thiết lập model, ghép Chrome và cấp key lại.
+
+Render Free có thể ngủ sau 15 phút không có lưu lượng đến. Yêu cầu tiếp theo có thể chờ khởi động và tiện ích Chrome cần kết nối lại. Khi gateway khởi động lại, các tác vụ đang chạy chuyển sang `unknown` và gateway giữ khóa chống gửi lại prompt. Phiên đăng nhập dashboard có thể yêu cầu đăng nhập lại. Gateway và updater Free tính giờ chạy vào cùng hạn mức của workspace. Chrome trên máy người dùng vẫn cần chạy và đăng nhập tab AI để xử lý tác vụ. [Giới hạn Free của Render](https://render.com/docs/free)
+
 ## Cập nhật gateway từ web
 
-Thiết lập một lần một Web Service riêng từ Blueprint [render-updater.yaml](../render-updater.yaml), chọn đúng Blueprint Path. Dịch vụ dùng [Dockerfile.updater](../Dockerfile.updater), có persistent disk riêng và tắt Auto-Deploy. Mô hình này thêm một Web Service và một disk có phí. Thiết lập gateway bằng `render.yaml` trước để có bản deploy đang chạy làm mốc.
+Thiết lập gateway trước để có bản deploy đang chạy làm mốc. Tạo Web Service cập nhật riêng bằng [render-updater.yaml](../render-updater.yaml) nếu dùng persistent disk, hoặc [render-updater-free.yaml](../render-updater-free.yaml) nếu dùng PostgreSQL trên Render Free. Cả hai dùng [Dockerfile.updater](../Dockerfile.updater) và tắt Auto-Deploy.
 
 Điền các biến sau cho **dịch vụ cập nhật**:
 
@@ -51,7 +66,7 @@ Render cung cấp `RENDER_SERVICE_ID` cho chính updater để ứng dụng ch�
 
 Mở updater, đăng nhập bằng mật khẩu riêng, xem commit đang chạy và commit mới nhất, rồi mở diff GitHub nếu cần. Khi bấm **Triển khai commit mới**, ứng dụng xác minh lại repo, nhánh, lịch sử Git nối tiếp và trạng thái Render. Render build đúng SHA đã duyệt. Nếu commit thay đổi trong lúc xem trước hoặc đang có deploy khác, updater yêu cầu kiểm tra lại. Nếu mất phản hồi sau khi bấm, mục này giữ bản ghi và tra lại deploy trước khi cho phép gửi tiếp.
 
-Các lần cập nhật này chỉ áp dụng cho gateway. Updater giữ URL, tiến trình và lịch sử riêng. Gateway dùng một instance có đĩa bền vững, nên Render vẫn có thể ngắt ngắn kết nối của gateway trong lúc thay phiên bản. Chọn lúc không có tác vụ đang chạy. Disk nhiệm vụ và kho đối tượng vẫn được tái sử dụng khi gateway khởi động lại.
+Các lần cập nhật này áp dụng cho gateway. Updater giữ URL, tiến trình và lịch sử riêng. Render có thể ngắt ngắn kết nối gateway trong lúc thay phiên bản. Chọn lúc không có tác vụ đang chạy. Gateway đọc lại trạng thái từ disk hoặc PostgreSQL và tiếp tục dùng cùng kho đối tượng sau khi khởi động lại.
 
 ## Ghép Chrome và cấu hình model
 
@@ -91,13 +106,14 @@ npm run test:browser
 docker build -t ai-bridge-cloud .
 ```
 
-Bộ cloud dựng reverse proxy HTTPS, kết nối WSS và kho tương thích giao thức S3 giả lập. Cờ `BRIDGE_TEST_DASHBOARD=1` mở dashboard trong Chromium để xác minh đăng nhập và các thao tác giao diện. `CHROME_BIN` trỏ tới Chromium khi máy dùng đường dẫn khác. Bộ trình duyệt chạy code tiện ích trên DOM giả lập qua Chrome API mô phỏng. Có thể đặt `CHROME_NO_SANDBOX=1` riêng cho bài thử trong container CI cần chế độ đó.
+Bộ cloud dựng reverse proxy HTTPS, kết nối WSS và kho tương thích giao thức S3 giả lập. Cờ `BRIDGE_TEST_DASHBOARD=1` mở dashboard trong Chromium để xác minh đăng nhập và các thao tác giao diện. Để chạy cùng kiểm thử với Blueprint Free, đặt `BRIDGE_TEST_STATE_DATABASE_URL` bằng URL của PostgreSQL dành riêng cho kiểm thử, có TLS. `CHROME_BIN` trỏ tới Chromium khi máy dùng đường dẫn khác. Bộ trình duyệt chạy code tiện ích trên DOM giả lập qua Chrome API mô phỏng. Có thể đặt `CHROME_NO_SANDBOX=1` riêng cho bài thử trong container CI cần chế độ đó.
 
 ### Kết quả kiểm thử trong workspace
 
 | Phần | Kết quả |
 | --- | --- |
 | API local, cloud và cập nhật | PASS, 31 bài. Đã kiểm thử scope, dashboard, WSS, tải media đúng SHA-256, dọn tệp cũ và bảo vệ tệp đang dùng, xác nhận commit và chặn gửi deploy trùng. GitHub và Render API trong các bài updater dùng mô phỏng. |
+| Render Free với PostgreSQL | PASS, 32 bài. Dùng PostgreSQL 17 với TLS và kho S3 giả lập. Đã kiểm tra mất thư mục tạm, dùng lại key và ảnh tham chiếu, tải video, tra cứu tác vụ, lịch sử updater và chặn tiến trình cũ ghi đè. |
 | Tiện ích và DOM | PASS, 1 bài Chromium với trang AI giả lập. Đã chạy code kiểm tra ảnh tham chiếu, đúng tab, F5, upload ảnh và video. Chrome API dùng mô phỏng. |
 | Docker | PASS, build bằng cache npm nạp từ registry theo lockfile. Container chạy với UID 1000 và volume ghi được, phục vụ `/health`, dashboard và bảo vệ `/v1/models`. |
 | Docker updater | PASS. Build và khởi động updater riêng với UID 1000 và disk riêng. Kiểm tra `/health`, giao diện và yêu cầu đăng nhập. |

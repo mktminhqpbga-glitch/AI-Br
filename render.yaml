@@ -30,6 +30,6 @@ services:
       - key: BRIDGE_S3_SECRET_ACCESS_KEY
         sync: false
       - key: BRIDGE_MEDIA_QUOTA_BYTES
-        value: "2147483648"
+        value: "7516192768"
       - key: BRIDGE_MEDIA_RETENTION_HOURS
         value: "24"

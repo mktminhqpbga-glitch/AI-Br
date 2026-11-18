@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { openSharedState } from "../shared-state.mjs";
 import { createUpdater, updaterConfig } from "../updater-control.mjs";
 import { createUpdaterServer } from "../updater-server.mjs";
 
@@ -118,6 +120,32 @@ test("lost acknowledgment is reconciled on restart without another deploy", asyn
   assert.equal(live.canDeploy, false);
   assert.deepEqual(state.posted, [newer]);
   assert.doesNotMatch(JSON.stringify(live), /fixture-.*(?:key|password)/);
+});
+
+test("PostgreSQL recovers updater history without disk and fences the previous instance", {
+  skip: !process.env.BRIDGE_TEST_STATE_DATABASE_URL,
+}, async (t) => {
+  const { config, fetcher, state } = fixture(t);
+  const url = process.env.BRIDGE_TEST_STATE_DATABASE_URL;
+  const namespace = "updater:test-" + randomUUID();
+  const originalState = await openSharedState(url, namespace);
+  t.after(() => originalState.close().catch(() => {}));
+  const original = createUpdater(config, fetcher, originalState);
+  state.dropped = true;
+  await assert.rejects(original.deploy(from, newer), { status: 502 });
+  assert.deepEqual(fs.readdirSync(config.root), []);
+  fs.rmdirSync(config.root);
+
+  const restoredState = await openSharedState(url, namespace);
+  t.after(() => restoredState.close());
+  originalState.write("updater-history", []);
+  await assert.rejects(originalState.flush(), { code: "STATE_SUPERSEDED" });
+  const restored = createUpdater(config, fetcher, restoredState);
+  const pending = await restored.preview();
+  assert.equal(pending.busy, true);
+  assert.equal(pending.history[0].deployId, "dep-new");
+  await assert.rejects(restored.deploy(from, newer), { status: 409 });
+  assert.deepEqual(state.posted, [newer]);
 });
 
 test("separate updater web panel requires its own login and CSRF before calling Render", async (t) => {

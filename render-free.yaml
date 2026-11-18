@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: ai-bridge-cloud-free
+    runtime: docker
+    plan: free
+    autoDeployTrigger: "off"
+    healthCheckPath: /health
+    envVars:
+      - key: BRIDGE_STATE_MODE
+        value: postgres
+      - key: BRIDGE_STATE_DATABASE_URL
+        sync: false
+      - key: BRIDGE_MODE
+        value: cloud
+      - key: BRIDGE_DATA_DIR
+        value: /tmp/ai-bridge
+      - key: BRIDGE_PUBLIC_URL
+        sync: false
+      - key: BRIDGE_ADMIN_PASSWORD
+        sync: false
+      - key: BRIDGE_S3_ENDPOINT
+        sync: false
+      - key: BRIDGE_S3_REGION
+        sync: false
+      - key: BRIDGE_S3_BUCKET
+        sync: false
+      - key: BRIDGE_S3_ACCESS_KEY_ID
+        sync: false
+      - key: BRIDGE_S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: BRIDGE_S3_PREFIX
+        value: ai-br-free
+      - key: BRIDGE_MEDIA_QUOTA_BYTES
+        value: "7516192768"
+      - key: BRIDGE_MEDIA_RETENTION_HOURS
+        value: "24"

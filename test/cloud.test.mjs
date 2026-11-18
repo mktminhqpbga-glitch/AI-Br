@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import vm from "node:vm";
 import { chromium } from "playwright-core";
 import WebSocket from "ws";
+import { namespaceFor, openSharedState } from "../shared-state.mjs";
 
 const exec = promisify(execFile);
 const origin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
@@ -128,17 +129,24 @@ async function fixtures(t) {
   const gatewayPort = await bind(gateway, t);
   const base = "https://127.0.0.1:" + gatewayPort;
   const root = path.join(dir, "data");
+  const database = process.env.BRIDGE_TEST_STATE_DATABASE_URL;
+  const stateEnv = database ? {
+    BRIDGE_STATE_MODE: "postgres", BRIDGE_STATE_DATABASE_URL: database, BRIDGE_STATE_NAMESPACE: "test-" + randomUUID(),
+  } : {};
+  const caFile = path.join(dir, "trusted.pem");
+  const extraCa = process.env.NODE_EXTRA_CA_CERTS;
+  await fs.writeFile(caFile, extraCa ? Buffer.concat([tls.cert, await fs.readFile(extraCa)]) : tls.cert);
   let output = "";
   async function start() {
     const child = spawn(process.execPath, ["local-server.mjs"], {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
-        ...process.env, BRIDGE_MODE: "cloud", PORT: String(upstream), BRIDGE_PUBLIC_URL: base,
+        ...process.env, ...stateEnv, BRIDGE_MODE: "cloud", PORT: String(upstream), BRIDGE_PUBLIC_URL: base,
         BRIDGE_UPDATE_URL: "https://updater.example.test",
         BRIDGE_DATA_DIR: root, BRIDGE_ADMIN_PASSWORD: adminPass,
         BRIDGE_S3_ENDPOINT: "https://127.0.0.1:" + storagePort, BRIDGE_S3_BUCKET: "fixture",
         BRIDGE_S3_ACCESS_KEY_ID: "fixture-storage-access", BRIDGE_S3_SECRET_ACCESS_KEY: "fixture-storage-secret",
-        BRIDGE_S3_REGION: "us-east-1", NODE_EXTRA_CA_CERTS: certFile,
+        BRIDGE_S3_REGION: "us-east-1", NODE_EXTRA_CA_CERTS: caFile,
       },
     });
     child.stdout.on("data", (chunk) => { output += chunk; });
@@ -159,7 +167,7 @@ async function fixtures(t) {
     return stop;
   }
   const stop = await start();
-  return { dir, root, base, upstream, ca: tls.cert, objects, signatures, start, stop, output: () => output,
+  return { dir, root, database, stateEnv, base, upstream, ca: tls.cert, objects, signatures, start, stop, output: () => output,
     http: (route, method = "GET", data, headers) => httpsCall(base, tls.cert, route, method, data, headers) };
 }
 
@@ -383,6 +391,7 @@ test("cloud gateway uses HTTPS/WSS, scopes, fenced tabs, durable media and trace
   extension.peer.terminate();
   await waitFor("unknown", async () => (await auth("/v1/videos/" + unknown.task_id)).json().status === "unknown");
   await host.stop();
+  if (host.database) await fs.rm(host.root, { recursive: true, force: true });
   await host.start();
   const resumed = await connect(t, host, profileInstanceId, credential, tab);
   await waitFor("tab reconnect", async () => (await auth("/api/bridge/status")).json().tabs[0]?.busy);
@@ -406,7 +415,9 @@ test("cloud gateway uses HTTPS/WSS, scopes, fenced tabs, durable media and trace
   assert.equal(dashboard.stats.unknown, 1);
   assert.ok(dashboard.stats.errors >= 3);
   assert.ok(dashboard.events.some((item) => item.code === "TAB_BUSY" && item.layer === "routing"));
-  const audit = await fs.readFile(path.join(host.root, "events.jsonl"), "utf8");
+  const auditFile = path.join(host.root, "events.jsonl");
+  if (host.database) await assert.rejects(fs.stat(auditFile), { code: "ENOENT" });
+  const audit = host.database ? "" : await fs.readFile(auditFile, "utf8");
   for (const value of [key, restricted.key, code, credential, adminPass, "Fixture image", "fixture-storage-secret"]) {
     assert.ok(!(audit + host.output() + JSON.stringify(dashboard) + JSON.stringify(timeline)).includes(value));
   }
@@ -418,9 +429,12 @@ test("cloud gateway uses HTTPS/WSS, scopes, fenced tabs, durable media and trace
   await waitFor("updated document", async () => (await auth("/api/bridge/status")).json().tabs[0]?.documentToken === refreshed.documentToken);
   assert.equal((await admin("models", "POST", { ...model, target: { ...target, documentToken: refreshed.documentToken } })).status, 200);
   const text = auth("/v1/chat/completions", "POST", {
-    model: model.id, client_request_id: "text-stream", stream: true, messages: [{ role: "user", content: "Fixture text" }],
+    model: model.id, client_request_id: "text-stream", stream: true, input_images: [uploaded.json().id],
+    messages: [{ role: "user", content: "Fixture text" }],
   });
-  const textReport = await resumed.submit(await resumed.run());
+  const resumedRun = await resumed.run();
+  assert.deepEqual(Buffer.from(resumedRun.input_images[0].data, "base64"), image);
+  const textReport = await resumed.submit(resumedRun);
   textReport("website-completed");
   textReport("complete", { media: [], text: "Fixture streamed response" });
   const textResult = await text;
@@ -428,4 +442,15 @@ test("cloud gateway uses HTTPS/WSS, scopes, fenced tabs, durable media and trace
   assert.match(textResult.headers["content-type"], /^text\/event-stream/);
   assert.match(textResult.content.toString(), /Fixture streamed response/);
   assert.match(textResult.content.toString(), /data: \[DONE\]/);
+
+  if (host.database) {
+    const disconnected = once(resumed.peer, "close");
+    const replacement = await openSharedState(host.database, namespaceFor(host.stateEnv, "gateway"));
+    t.after(() => replacement.close());
+    assert.equal((await auth("/v1/models")).status, 503);
+    const health = await host.http("/health");
+    assert.equal(health.status, 200);
+    assert.deepEqual(health.json(), { ok: true, draining: true });
+    await disconnected;
+  }
 });

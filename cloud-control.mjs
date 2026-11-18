@@ -52,7 +52,7 @@ export function errorLayer(code = "", fallback = "gateway") {
   return fallback;
 }
 
-export function createCloudControl({ root, publicUrl, updateUrl, adminPassword, providerLabels, sendJson, profileClients, status, tasks, mediaUsage }) {
+export function createCloudControl({ root, state, publicUrl, updateUrl, adminPassword, providerLabels, sendJson, profileClients, status, tasks, mediaUsage }) {
   if (typeof adminPassword !== "string" || adminPassword.length < 24) throw new Error("Cloud admin credential is missing or too short.");
   const base = httpsOrigin(publicUrl);
   let updater = null;
@@ -62,14 +62,24 @@ export function createCloudControl({ root, publicUrl, updateUrl, adminPassword, 
   }
   const file = path.join(root, "control.json");
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-  let settings = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {
+  let settings = (state ? state.initial.get("control") : fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : undefined) ?? {
     keys: [], pairings: [], profiles: [], models: [], origins: [], domains: [], sessions: [],
   };
   const journal = path.join(root, "events.jsonl");
   let events = [];
   let sinceTrim = 0;
   const traceKeys = new Set();
-  if (fs.existsSync(journal)) {
+  const eventKeys = new Map();
+  if (state) {
+    for (const [key, entry] of state.initial) {
+      if (!key.startsWith("event:")) continue;
+      events.push(entry);
+      eventKeys.set(entry, key);
+    }
+    events.sort((a, b) => a.at - b.at);
+    trim();
+    for (const entry of events) if (entry.unique) traceKeys.add(entry.unique);
+  } else if (fs.existsSync(journal)) {
     const lines = fs.readFileSync(journal, "utf8").split("\n").filter(Boolean);
     events = lines.flatMap((line, index) => {
       try { return [JSON.parse(line)]; }
@@ -81,11 +91,20 @@ export function createCloudControl({ root, publicUrl, updateUrl, adminPassword, 
 
   function trim() {
     const cutoff = Date.now() - 30 * DAY;
-    events = events.filter((entry) => entry.at >= cutoff);
+    events = events.filter((entry) => {
+      if (entry.at >= cutoff) return true;
+      if (state) {
+        state.write(eventKeys.get(entry), null);
+        eventKeys.delete(entry);
+      }
+      if (entry.unique) traceKeys.delete(entry.unique);
+      return false;
+    });
+    sinceTrim = 0;
+    if (state) return;
     const temp = journal + ".tmp";
     fs.writeFileSync(temp, events.map((item) => JSON.stringify(item) + "\n").join(""), { mode: 0o600, flush: true });
     fs.renameSync(temp, journal);
-    sinceTrim = 0;
   }
 
   function update(apply) {
@@ -94,7 +113,8 @@ export function createCloudControl({ root, publicUrl, updateUrl, adminPassword, 
     next.sessions = next.sessions.filter((item) => item.expires > now);
     next.pairings = next.pairings.filter((item) => item.expires > now);
     const result = apply(next);
-    jsonState(file, next);
+    if (state) state.write("control", next);
+    else jsonState(file, next);
     settings = next;
     return result;
   }
@@ -110,7 +130,13 @@ export function createCloudControl({ root, publicUrl, updateUrl, adminPassword, 
       ...(code ? { code, layer: errorLayer(code, layer) } : layer ? { layer } : {}),
       ...(unique ? { unique } : {}),
     };
-    fs.appendFileSync(journal, JSON.stringify(entry) + "\n", { mode: 0o600, flush: true });
+    if (state) {
+      const key = "event:" + id();
+      state.write(key, entry);
+      eventKeys.set(entry, key);
+    } else {
+      fs.appendFileSync(journal, JSON.stringify(entry) + "\n", { mode: 0o600, flush: true });
+    }
     if (unique) traceKeys.add(unique);
     events.push(entry);
     if (++sinceTrim >= 2048 && events[0].at < Date.now() - 30 * DAY) trim();
@@ -199,11 +225,12 @@ export function createCloudControl({ root, publicUrl, updateUrl, adminPassword, 
   function chromeEvent(client, stage, previous) {
     if (!client.profileInstanceId) return;
     const profile = client.profileInstanceId;
-    if (stage === "heartbeat" || stage === "connected") {
-      client.lastHeartbeat = Date.now();
+    if (stage === "heartbeat" || stage === "connected") client.lastHeartbeat = Date.now();
+    // PostgreSQL only needs the last heartbeat when the socket connects or disconnects.
+    if (stage === "connected" || stage === (state ? "disconnected" : "heartbeat")) {
       update((next) => {
         const profile = next.profiles.find((item) => item.profile === client.profileInstanceId);
-        if (profile) {
+        if (profile && client.lastHeartbeat) {
           profile.lastHeartbeat = client.lastHeartbeat;
           profile.version = client.extensionVersion;
         }

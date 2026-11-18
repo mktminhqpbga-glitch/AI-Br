@@ -58,18 +58,23 @@ function deployInfo(deploy) {
   };
 }
 
-export function createUpdater(config, fetcher = fetch) {
+export function createUpdater(config, fetcher = fetch, state) {
   fs.mkdirSync(config.root, { recursive: true, mode: 0o700 });
   const file = path.join(config.root, "updater-history.json");
-  let history = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
+  let history = (state ? state.initial.get("updater-history") : fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : undefined) ?? [];
   if (!Array.isArray(history) || history.some((entry) => entry.serviceId !== config.serviceId
     || entry.repo !== config.repo || entry.branch !== config.branch)) {
     throw new Error("Updater history belongs to a different Git target or Render service.");
   }
   let submitting = false;
 
-  function save(entry) {
+  async function save(entry) {
     const next = [entry, ...history.filter((old) => old.id !== entry.id)].slice(0, 50);
+    if (state) {
+      state.write("updater-history", next);
+      history = next;
+      return state.flush();
+    }
     const temp = file + "." + randomUUID() + ".tmp";
     try {
       fs.writeFileSync(temp, JSON.stringify(next), { mode: 0o600, flush: true, flag: "wx" });
@@ -121,14 +126,14 @@ export function createUpdater(config, fetcher = fetch) {
     }
   }
 
-  function refreshHistory(deploys) {
+  async function refreshHistory(deploys) {
     const entry = history[0];
     if (!entry) return;
     const found = entry.deployId
       ? deploys.find((deploy) => deploy.id === entry.deployId)
       : deploys.find((deploy) => deploy.sha === entry.sha && Date.parse(deploy.createdAt) >= Math.floor(entry.startedAt / 1000) * 1000);
     if (found && found.sha === entry.sha && (entry.deployId !== found.id || entry.status !== found.status)) {
-      save({ ...entry, deployId: found.id, status: found.status });
+      await save({ ...entry, deployId: found.id, status: found.status });
     }
   }
 
@@ -146,7 +151,7 @@ export function createUpdater(config, fetcher = fetch) {
     if (deploys.length !== listed.length) throw new UpdaterError(502, "Lịch sử Render trả dữ liệu không hợp lệ.");
     const live = liveList[0]?.deploy;
     const current = live?.status === "live" && commitSha.test(live.commit?.id ?? "") ? live.commit.id : null;
-    if (!submitting) refreshHistory(deploys);
+    if (!submitting) await refreshHistory(deploys);
     const lastAttempt = history[0];
     const pending = lastAttempt && lastAttempt.status !== "rejected" && !finished.has(lastAttempt.status);
     const busy = Boolean(pending || deploys.some((deploy) => !finished.has(deploy.status)));
@@ -188,17 +193,17 @@ export function createUpdater(config, fetcher = fetch) {
         id: randomUUID(), serviceId: config.serviceId, repo: config.repo, branch: config.branch,
         startedAt: Date.now(), from, sha, status: "submitting",
       };
-      save(entry);
+      await save(entry);
       try {
         const result = await render("/deploys", { method: "POST", body: { commitId: sha } });
         if (!deployId.test(result?.id ?? "") || result.commit?.id && result.commit.id !== sha) {
           throw new UpdaterError(502, "Render chưa xác nhận đúng yêu cầu triển khai.");
         }
-        save({ ...entry, deployId: result.id, status: result.status ?? "created" });
+        await save({ ...entry, deployId: result.id, status: result.status ?? "created" });
         return { deployId: result.id, sha, status: result.status ?? "created" };
       } catch (error) {
         const rejected = [400, 401, 403, 404, 422].includes(error.upstreamStatus);
-        save({ ...entry, status: rejected ? "rejected" : "unconfirmed" });
+        await save({ ...entry, status: rejected ? "rejected" : "unconfirmed" });
         if (rejected) throw error;
         throw new UpdaterError(502, "Chưa xác minh Render đã nhận deploy. Hãy kiểm tra trạng thái, tránh gửi lại.");
       }

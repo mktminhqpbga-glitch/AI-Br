@@ -11,7 +11,7 @@ RUN --mount=type=bind,from=npm_cache,target=/tmp/npm-cache \
     && mkdir -p /var/data/ai-bridge \
     && chown -R node:node /app /var/data/ai-bridge \
     && rm -rf /root/.npm
-COPY --chown=node:node docker-start.mjs local-server.mjs media-bridge.mjs media-store.mjs cloud-control.mjs cloud-objects.mjs prompt-instructions.mjs tool-calls.mjs ai-bridge.settings.json ./
+COPY --chown=node:node docker-start.mjs local-server.mjs media-bridge.mjs media-store.mjs shared-state.mjs cloud-control.mjs cloud-objects.mjs prompt-instructions.mjs tool-calls.mjs ai-bridge.settings.json ./
 COPY --chown=node:node extension ./extension
 COPY --chown=node:node prompt-instructions ./prompt-instructions
 COPY --chown=node:node cloud-ui ./cloud-ui

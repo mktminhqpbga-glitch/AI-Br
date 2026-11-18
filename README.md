@@ -126,6 +126,8 @@ Cloud mode runs the gateway, Vietnamese dashboard and durable task tracking on R
 
 Use the separate [updater blueprint](render-updater.yaml) to compare the active gateway commit with GitHub and deploy a verified commit from the web.
 
+For Render Free, use [render-free.yaml](render-free.yaml) for the gateway and, if needed, [render-updater-free.yaml](render-updater-free.yaml) for the updater. Both use external PostgreSQL for durable state. Media stays in the private S3-compatible bucket. See the [Render Free setup and limits](docs/cloud-render.md#render-free).
+
 ## MacFlow and Toonflow media API
 
 AI-Br 0.6 adds authenticated tab discovery, reference-image upload, pinned generation, resumable task status and verified media downloads. The media workflow requires FFmpeg and ffprobe. The default listeners share state on ports 4319 and 4317. See the [MacFlow API contract](docs/macflow-api.md) for setup, capability detection, examples and recovery behavior.
