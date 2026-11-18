@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cập nhật AI Bridge</title>
+<link rel="stylesheet" href="/dashboard.css">
+<script defer src="/updater.js"></script>
+</head>
+<body>
+<main id="login-view" class="sign-in">
+  <form id="login" class="panel">
+    <div class="brand"><span class="brand-icon">↯</span> AI Bridge</div>
+    <h1>Đăng nhập mục cập nhật</h1>
+    <label>Mật khẩu cập nhật <input required type="password" name="password" autocomplete="current-password"></label>
+    <button>Đăng nhập</button>
+    <p id="login-error" role="alert"></p>
+  </form>
+</main>
+<main id="app" class="content" hidden>
+  <header class="topbar"><h1>Cập nhật AI Bridge</h1><button id="logout" class="secondary">Đăng xuất</button></header>
+  <p id="error" class="alert" role="alert" hidden></p>
+  <div class="panel">
+    <h2>So sánh phiên bản</h2>
+    <p id="target"></p>
+    <div class="metrics">
+      <div class="metric"><span>Đang chạy trên Render</span><code id="current">—</code></div>
+      <div class="metric"><span>Mới nhất trên GitHub</span><code id="candidate">—</code></div>
+    </div>
+    <p id="state" role="status"></p>
+    <ul id="commits"></ul>
+    <p><a id="compare" hidden target="_blank" rel="noopener noreferrer">Xem thay đổi trên GitHub ↗</a></p>
+    <div class="toolbar">
+      <button id="refresh" class="secondary">Kiểm tra phiên bản</button>
+      <button id="deploy" disabled>Triển khai commit mới</button>
+    </div>
+  </div>
+  <div class="panel"><h2>Lịch sử cập nhật</h2><div class="table-wrap">
+    <table><thead><tr><th>Thời gian</th><th>Từ</th><th>Đến</th><th>Trạng thái</th></tr></thead><tbody id="history"></tbody></table>
+  </div></div>
+</main>
+</body>
+</html>

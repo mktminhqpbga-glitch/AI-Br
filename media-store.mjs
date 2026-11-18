@@ -93,39 +93,96 @@ export async function readImageUpload(request) {
   });
 }
 
-export function createMediaStore(root, { objects, quota = 2 * 1024 ** 3, ttlMs = 7 * 86_400_000 } = {}) {
+export const defaultMediaRetentionHours = 24;
+export const mediaCleanupPercent = 70;
+
+export function createMediaStore(root, {
+  objects, quota = 2 * 1024 ** 3, ttlMs = defaultMediaRetentionHours * 3_600_000,
+} = {}) {
   const assets = new Map();
+  const pins = new Map();
+  const deleting = new Map();
+  const cleanupAtBytes = Math.floor(quota * mediaCleanupPercent / 100);
   let used = 0;
   let reserved = 0;
+  let cleanupErrorAt = null;
+  let maintenance = Promise.resolve();
+
+  function expiresAt(metadata) {
+    return Math.min(metadata.expires_at, metadata.created_at + ttlMs);
+  }
+
   if (objects) {
     for (const folder of ["input", "output"]) {
       const target = directory(folder);
       for (const name of fs.readdirSync(target).filter((item) => item.endsWith(".json"))) {
-        const metadata = JSON.parse(fs.readFileSync(path.join(target, name), "utf8"));
+        const file = path.join(target, name);
+        const metadata = JSON.parse(fs.readFileSync(file, "utf8"));
+        // Old versions kept expiration but did not save the creation time.
+        metadata.created_at ??= fs.statSync(file).mtimeMs;
         assets.set(metadata.id, { folder, metadata });
         used += metadata.size;
       }
     }
   }
-  let expiring = false;
-  async function prune() {
-    if (expiring) return;
-    expiring = true;
-    try {
-      for (const { folder, metadata } of assets.values()) {
-        if (metadata.expires_at <= Date.now()) await remove(folder, metadata.id);
+
+  function isPinned({ folder, metadata }) {
+    return pins.has(metadata.id) || folder === "output" && pins.has(metadata.taskId);
+  }
+
+  function pin(ids) {
+    if (!objects) return () => {};
+    const unique = [...new Set(ids)];
+    for (const id of unique) pins.set(id, (pins.get(id) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      for (const id of unique) {
+        const remaining = pins.get(id) - 1;
+        if (!remaining) pins.delete(id);
+        else pins.set(id, remaining);
       }
-    } finally { expiring = false; }
+    };
   }
-  async function remove(folder, id) {
-    if (objects) await objects.remove(folder, id);
-    fs.rmSync(path.join(root, folder, id + ".json"), { force: true });
-    fs.rmSync(path.join(root, folder, id + ".bin"), { force: true });
-    if (assets.has(id)) used -= assets.get(id).metadata.size;
-    assets.delete(id);
+
+  function scheduleMaintenance(work) {
+    const result = maintenance.then(work);
+    maintenance = result.catch(() => {});
+    return result;
   }
+
+  async function prune(incoming = 0) {
+    const now = Date.now();
+    const oldestFirst = [...assets.values()].sort((a, b) => a.metadata.created_at - b.metadata.created_at);
+    let failed = false;
+    for (const entry of oldestFirst) {
+      const { folder, metadata } = entry;
+      if (!assets.has(metadata.id) || isPinned(entry)) continue;
+      if (expiresAt(metadata) > now && used + reserved + incoming <= cleanupAtBytes) continue;
+      try { await remove(folder, metadata.id); }
+      catch { failed = true; }
+    }
+    cleanupErrorAt = failed ? new Date().toISOString() : null;
+  }
+
+  function remove(folder, id) {
+    const existing = deleting.get(id);
+    if (existing) return existing;
+    const operation = (async () => {
+      if (objects) await objects.remove(folder, id);
+      fs.rmSync(path.join(root, folder, id + ".bin"), { force: true });
+      fs.rmSync(path.join(root, folder, id + ".json"), { force: true });
+      const entry = assets.get(id);
+      if (entry) used -= entry.metadata.size;
+      assets.delete(id);
+    })().finally(() => deleting.delete(id));
+    deleting.set(id, operation);
+    return operation;
+  }
+
   if (objects) {
-    const timer = setInterval(() => prune().catch(() => {}), 60_000);
+    const timer = setInterval(() => scheduleMaintenance(prune), 60_000);
     timer.unref();
   }
   let toolsAvailable;
@@ -205,19 +262,22 @@ export function createMediaStore(root, { objects, quota = 2 * 1024 ** 3, ttlMs =
     if (!input && sha256 !== expectedSha) throw failure;
     const id = randomUUID();
     const file = path.join(directory(folder), id + ".bin");
-    if (objects && used + reserved + bytes.length > quota) {
-      await prune();
-      if (used + reserved + bytes.length > quota) throw new BridgeError(507, "STORAGE_QUOTA", "Media storage quota exceeded.");
-    }
-    reserved += bytes.length;
+    let reservation = 0;
     let uploaded = false;
     try {
       fs.writeFileSync(file, bytes, { flag: "wx", mode: 0o600, flush: true });
       await validateBytes(file, format, failure);
       const metadata = { id, mime_type: mime, size: bytes.length, sha256 };
+      const created = Date.now();
       const record = { ...metadata, ...(!input ? { kind: format.kind, taskId } : {}),
-        ...(objects ? { owner, expires_at: Date.now() + ttlMs } : {}) };
+        ...(objects ? { owner, created_at: created, expires_at: created + ttlMs } : {}) };
       if (objects) {
+        await scheduleMaintenance(async () => {
+          if (used + reserved + bytes.length > cleanupAtBytes) await prune(bytes.length);
+          if (used + reserved + bytes.length > quota) throw new BridgeError(507, "STORAGE_QUOTA", "The media quota is full. Media in use was preserved.");
+          reserved += bytes.length;
+          reservation = bytes.length;
+        });
         await objects.put(folder, record, bytes);
         uploaded = true;
       }
@@ -233,7 +293,7 @@ export function createMediaStore(root, { objects, quota = 2 * 1024 ** 3, ttlMs =
       if (uploaded) await objects.remove(folder, id).catch(() => {});
       if (error instanceof BridgeError) throw error;
       throw new BridgeError(500, "STORAGE_ERROR", "Unable to save media on the bridge host.");
-    } finally { reserved -= bytes.length; }
+    } finally { reserved -= reservation; }
   }
 
   function bytesValid(bytes, metadata) {
@@ -243,16 +303,22 @@ export function createMediaStore(root, { objects, quota = 2 * 1024 ** 3, ttlMs =
   async function readOutput(id, owner) {
     if (!objects) return read("output", id);
     const entry = assets.get(id);
-    if (!entry || entry.folder !== "output" || entry.metadata.owner !== owner || entry.metadata.expires_at <= Date.now()) return null;
-    const bytes = await objects.get("output", entry.metadata);
-    return bytesValid(bytes, entry.metadata) ? { bytes, metadata: entry.metadata } : null;
+    if (!entry || entry.folder !== "output" || entry.metadata.owner !== owner || deleting.has(id)
+      || expiresAt(entry.metadata) <= Date.now()) return null;
+    const release = pin([id]);
+    try {
+      const bytes = await objects.get("output", entry.metadata);
+      return bytesValid(bytes, entry.metadata) ? { bytes, metadata: entry.metadata } : null;
+    } finally { release(); }
   }
 
-  function read(folder, id, owner) {
+  function read(folder, id, owner, queued = false) {
     if (typeof id !== "string" || !UUID.test(id)) return null;
     try {
-      const metadata = JSON.parse(fs.readFileSync(path.join(root, folder, id + ".json"), "utf8"));
-      if (objects && (metadata.owner !== owner || metadata.expires_at <= Date.now())) return null;
+      const entry = assets.get(id);
+      if (objects && (!entry || entry.folder !== folder || entry.metadata.owner !== owner || deleting.has(id)
+        || expiresAt(entry.metadata) <= Date.now() && !(queued && isPinned(entry)))) return null;
+      const metadata = entry?.metadata ?? JSON.parse(fs.readFileSync(path.join(root, folder, id + ".json"), "utf8"));
       const file = path.join(root, folder, id + ".bin");
       if (fs.statSync(file).size !== metadata.size || metadata.size > MAX_MEDIA_SIZE) return null;
       const bytes = fs.readFileSync(file);
@@ -275,10 +341,14 @@ export function createMediaStore(root, { objects, quota = 2 * 1024 ** 3, ttlMs =
     requireValidator,
     saveInput: (bytes, mime, owner) => save("input", bytes, mime, undefined, undefined, owner),
     saveOutput: (bytes, mime, sha256, taskId, owner) => save("output", bytes, mime, sha256, taskId, owner),
-    readInput: (id, owner) => read("input", id, owner),
+    readInput: (id, owner, queued) => read("input", id, owner, queued),
+    pin,
     readOutput,
     removeOutput: (id) => remove("output", id),
-    usage: () => objects ? { bytes: used, quota_bytes: quota, retention_seconds: ttlMs / 1000 } : null,
+    usage: () => objects ? {
+      bytes: used, quota_bytes: quota, retention_seconds: ttlMs / 1000, cleanup_percent: mediaCleanupPercent,
+      cleanup_error_at: cleanupErrorAt,
+    } : null,
     saveTask: (task) => writeJson("tasks", task.task_id, task),
     restoreTasks,
   };

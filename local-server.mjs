@@ -13,7 +13,7 @@ import {
 } from "./prompt-instructions.mjs";
 import { makeAssistantMessage } from "./tool-calls.mjs";
 import { createMediaBridge } from "./media-bridge.mjs";
-import { BridgeError, createMediaStore } from "./media-store.mjs";
+import { BridgeError, createMediaStore, defaultMediaRetentionHours } from "./media-store.mjs";
 import { createCloudControl, errorLayer } from "./cloud-control.mjs";
 
 const MAX_BODY_BYTES = 1_000_000;
@@ -79,12 +79,13 @@ function initializeMediaBridge() {
   const store = createMediaStore(root, cloudMode ? {
     objects: cloudObjects,
     quota: configuredInteger(process.env.BRIDGE_MEDIA_QUOTA_BYTES, 2 * 1024 ** 3, 16 * 1024 ** 2, 100 * 1024 ** 3),
-    ttlMs: configuredInteger(process.env.BRIDGE_MEDIA_RETENTION_HOURS, 168, 1, 720) * 3_600_000,
+    ttlMs: configuredInteger(process.env.BRIDGE_MEDIA_RETENTION_HOURS, defaultMediaRetentionHours, 1, 720) * 3_600_000,
   } : {});
   if (cloudMode) {
     store.requireValidator();
     cloud = createCloudControl({
-      root, publicUrl: process.env.BRIDGE_PUBLIC_URL, adminPassword: process.env.BRIDGE_ADMIN_PASSWORD,
+      root, publicUrl: process.env.BRIDGE_PUBLIC_URL, updateUrl: process.env.BRIDGE_UPDATE_URL,
+      adminPassword: process.env.BRIDGE_ADMIN_PASSWORD,
       providerLabels: PROVIDER_DISPLAY_NAMES, sendJson, profileClients: clients, status: () => mediaBridge.snapshot(),
       tasks: () => mediaBridge.listTasks(), mediaUsage: store.usage,
     });

@@ -134,6 +134,7 @@ async function fixtures(t) {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env, BRIDGE_MODE: "cloud", PORT: String(upstream), BRIDGE_PUBLIC_URL: base,
+        BRIDGE_UPDATE_URL: "https://updater.example.test",
         BRIDGE_DATA_DIR: root, BRIDGE_ADMIN_PASSWORD: adminPass,
         BRIDGE_S3_ENDPOINT: "https://127.0.0.1:" + storagePort, BRIDGE_S3_BUCKET: "fixture",
         BRIDGE_S3_ACCESS_KEY_ID: "fixture-storage-access", BRIDGE_S3_SECRET_ACCESS_KEY: "fixture-storage-secret",
@@ -323,6 +324,10 @@ test("cloud gateway uses HTTPS/WSS, scopes, fenced tabs, durable media and trace
     assert.ok((await auth("/v1/models")).json().data.every((entry) => entry.id !== "studio-disabled"));
     await page.getByRole("button", { name: "Chrome và tiện ích" }).click();
     await page.getByText("Studio Chrome", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Cập nhật", exact: true }).click();
+    const updateLink = page.getByRole("link", { name: "Mở bảng cập nhật" });
+    await updateLink.waitFor();
+    assert.equal(await updateLink.getAttribute("href"), "https://updater.example.test");
     assert.deepEqual(errors, []);
     await browser.close();
   }

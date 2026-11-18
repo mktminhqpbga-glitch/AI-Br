@@ -52,9 +52,14 @@ export function errorLayer(code = "", fallback = "gateway") {
   return fallback;
 }
 
-export function createCloudControl({ root, publicUrl, adminPassword, providerLabels, sendJson, profileClients, status, tasks, mediaUsage }) {
+export function createCloudControl({ root, publicUrl, updateUrl, adminPassword, providerLabels, sendJson, profileClients, status, tasks, mediaUsage }) {
   if (typeof adminPassword !== "string" || adminPassword.length < 24) throw new Error("Cloud admin credential is missing or too short.");
   const base = httpsOrigin(publicUrl);
+  let updater = null;
+  if (updateUrl) {
+    try { updater = httpsOrigin(updateUrl.replace(/\/$/, "")); }
+    catch { console.warn("[ai-bridge] BRIDGE_UPDATE_URL must be an HTTPS origin."); }
+  }
   const file = path.join(root, "control.json");
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   let settings = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {
@@ -348,7 +353,7 @@ export function createCloudControl({ root, publicUrl, adminPassword, providerLab
         !url.searchParams.has(filter) || url.searchParams.get(filter) === String(filter === "tab" ? item.target.tabId : item[filter])
       )) && (!url.searchParams.has("layer") || events.some((entry) => entry.task_id === item.task_id && entry.layer === url.searchParams.get("layer") && entry.code)));
       return sendJson(response, 200, {
-        base_url: base, inventory: status(), profiles: profileList(), providers: providerLabels, models: settings.models,
+        base_url: base, update_url: updater, inventory: status(), profiles: profileList(), providers: providerLabels, models: settings.models,
         keys: settings.keys.map(({ hash, ...key }) => key), origins: settings.origins, domains: settings.domains,
         stats: stats(period, timed), usage: mediaUsage(), tasks: matching.reverse().slice(0, 200),
         events: period.filter((entry) => !entry.task_id || matching.some((task) => task.task_id === entry.task_id)).slice(-400).reverse(),

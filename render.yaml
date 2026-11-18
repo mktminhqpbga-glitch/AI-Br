@@ -32,4 +32,4 @@ services:
       - key: BRIDGE_MEDIA_QUOTA_BYTES
         value: "2147483648"
       - key: BRIDGE_MEDIA_RETENTION_HOURS
-        value: "168"
+        value: "24"

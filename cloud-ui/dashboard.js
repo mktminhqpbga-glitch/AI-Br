@@ -122,7 +122,7 @@ async function refresh() {
 }
 
 function render() {
-  const { stats, inventory, profiles, tasks, events, models, keys, usage, domains, origins, base_url: base } = state;
+  const { stats, inventory, profiles, tasks, events, models, keys, usage, domains, origins, base_url: base, update_url: updater } = state;
   $("#online").textContent = stats.extension_count ? stats.extension_count + " tiện ích online" : "Chưa có tiện ích online";
   $("#metrics").replaceChildren(...Object.entries(metricLabels).map(([key, label]) => {
     const value = stats[key];
@@ -132,7 +132,14 @@ function render() {
     item.append(node("span", label), node("strong", formatted));
     return item;
   }));
-  $("#storage").textContent = usage ? `${bytes(usage.bytes)} / ${bytes(usage.quota_bytes)} · Lưu ${number(usage.retention_seconds / 3600)} giờ` : "Chưa cấu hình.";
+  $("#storage").textContent = usage
+    ? `${bytes(usage.bytes)} / ${bytes(usage.quota_bytes)} · Lưu tối đa ${number(usage.retention_seconds / 3600)} giờ · Dọn tệp cũ khi vượt ${usage.cleanup_percent}%`
+      + (usage.cleanup_error_at ? ` · Lần dọn gần nhất gặp lỗi ${time(usage.cleanup_error_at)}` : "")
+    : "Chưa cấu hình.";
+  $("#update-link").hidden = !updater;
+  if (updater) $("#update-link").href = updater;
+  $("#update-hint").textContent = updater ? "Xem commit đang chạy, so sánh với GitHub rồi chọn phiên bản để triển khai."
+    : "Đặt BRIDGE_UPDATE_URL thành địa chỉ HTTPS của dịch vụ cập nhật riêng.";
   const providerOptions = Object.entries(state.providers);
   options($("#model-form").provider, providerOptions);
   options($("#task-filters").provider, providerOptions, "Tất cả");

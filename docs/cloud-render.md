@@ -1,6 +1,6 @@
 # AI Bridge Cloud trên Render
 
-AI Bridge Cloud là một Render Web Service duy nhất. HTTPS phục vụ dashboard và API, WSS nhận kết nối chủ động từ tiện ích trên Chrome của người dùng. Render giữ cấu hình, hàng đợi, nhật ký và điều phối. Chrome dùng phiên AI mà người dùng đã đăng nhập. MacFlow chỉ cần địa chỉ API và Bearer key.
+Gateway AI Bridge Cloud chạy trên một Render Web Service. Bảng cập nhật có thể chạy trên dịch vụ Render riêng. HTTPS phục vụ dashboard và API, WSS nhận kết nối chủ động từ tiện ích trên Chrome của người dùng. Render giữ cấu hình, hàng đợi, nhật ký và điều phối. Chrome dùng phiên AI mà người dùng đã đăng nhập. MacFlow chỉ cần địa chỉ API và Bearer key.
 
 ```text
 MacFlow / Toonflow ─── HTTPS ──> AI Bridge trên Render <── WSS ── Chrome Extension
@@ -10,7 +10,7 @@ MacFlow / Toonflow ─── HTTPS ──> AI Bridge trên Render <── WSS �
 
 ## Cấu hình Render
 
-1. Chuẩn bị một bucket S3 hoặc S3-compatible riêng tư. Chặn truy cập công khai. Cấp quyền đọc, ghi và xóa đối tượng cho riêng prefix của dịch vụ. Dùng endpoint HTTPS kiểu path-style được nhà cung cấp hỗ trợ. Đặt lifecycle của bucket dọn đối tượng thuộc prefix sau khoảng thời gian lưu đã chọn để thu hồi cả đối tượng bị bỏ lại khi tiến trình dừng đột ngột giữa lúc upload và ghi metadata.
+1. Chuẩn bị một bucket S3 hoặc S3-compatible riêng tư. Chặn truy cập công khai. Cấp quyền đọc, ghi và xóa đối tượng cho riêng prefix của dịch vụ. Dùng endpoint HTTPS kiểu path-style được nhà cung cấp hỗ trợ. Cấu hình lifecycle bucket cho đúng prefix ở mốc dự phòng dài hơn TTL của ứng dụng, ví dụ 2 ngày với mặc định 24 giờ. Lifecycle thu dọn cả đối tượng bị bỏ lại khi tiến trình dừng giữa lúc upload và ghi metadata.
 2. Trong tài khoản Render được cấp quyền, tạo Blueprint từ `render.yaml`. Cấu hình dùng Docker và một instance có persistent disk tại `/var/data/ai-bridge`. Disk giữ file trạng thái, nhật ký, thông tin ghép thiết bị dạng hash, metadata và bản ảnh đầu vào phục vụ hàng đợi. Kho đối tượng riêng lưu cả ảnh đầu vào và media đầu ra. Mỗi deployment dùng một disk riêng, một bucket hoặc prefix riêng, và đúng một instance để bảo toàn idempotency.
 3. Điền biến trong Render. Gán `BRIDGE_PUBLIC_URL` bằng origin HTTPS Render cấp, chẳng hạn `https://ai-bridge-cloud.onrender.com`. Đặt mật khẩu quản trị ngẫu nhiên dài ít nhất 24 ký tự. Nhập thông tin kho S3 trong giao diện secret của Render.
 4. Deploy và mở URL HTTPS. Kiểm tra `GET /health` rồi đăng nhập dashboard. Render kết thúc TLS và chuyển tiếp Host cùng `X-Forwarded-Proto: https`. WSS cũng kiểm tra các header này. Khi tự host, đặt ứng dụng sau reverse proxy tin cậy ghi đè các header này và giữ cổng upstream riêng.
@@ -26,11 +26,32 @@ MacFlow / Toonflow ─── HTTPS ──> AI Bridge trên Render <── WSS �
 | `BRIDGE_S3_ACCESS_KEY_ID`, `BRIDGE_S3_SECRET_ACCESS_KEY` | Khóa quyền tối thiểu dành riêng cho bucket/prefix |
 | `BRIDGE_S3_PREFIX` | Mặc định `ai-br` |
 | `BRIDGE_MEDIA_QUOTA_BYTES` | Mặc định 2 GiB, tính cả ảnh đầu vào và đầu ra |
-| `BRIDGE_MEDIA_RETENTION_HOURS` | Mặc định 168 giờ |
+| `BRIDGE_MEDIA_RETENTION_HOURS` | Mặc định 24 giờ |
 
-Media hết hạn sẽ không tải lại được. Sự kiện chẩn đoán dùng cửa sổ 30 ngày. Metadata tác vụ và khóa chống gửi trùng được giữ trên disk để việc tra cứu tiếp tục hoạt động sau restart. Khi cần chuyển dịch vụ, giữ disk và kho đối tượng tương ứng. Dùng các thủ tục backup của Render và kho đã chọn.
+Ứng dụng dọn media hết hạn và xóa các tệp cũ nhất có thể xóa khi dung lượng vượt 70% quota hoặc một lượt lưu mới sẽ đẩy dung lượng vượt mốc này. Tệp tham chiếu của tác vụ đang chờ/chạy và media đang lưu hoặc đọc từ kho được bảo vệ. Nếu phần đang sử dụng vượt ngưỡng dọn, ứng dụng tiếp tục giữ các tệp đó trong giới hạn quota. Chỉ khi thật sự thiếu chỗ ở quota cứng mới trả HTTP 507. Tệp đã dọn sẽ không tải lại được. Nếu một dịch vụ Render đã đặt biến lưu trữ cũ là 168 giờ, đổi biến trên Render thành 24. Sự kiện chẩn đoán dùng cửa sổ 30 ngày. Metadata tác vụ và khóa chống gửi trùng được giữ trên disk để việc tra cứu tiếp tục hoạt động sau restart. Khi cần chuyển dịch vụ, giữ disk và kho đối tượng tương ứng. Dùng các thủ tục backup của Render và kho đã chọn.
 
 Để thêm domain riêng, thêm hostname vào Render, cấu hình CNAME trỏ đúng hostname `.onrender.com` của gateway và chờ Render cấp TLS. Trong **Cấu hình API → Tên miền riêng**, tạo challenge, thêm TXT `_aibr-verify.<hostname>` với giá trị hiển thị và bấm xác minh. Sau đó có thể dùng domain đó cho API và làm địa chỉ mặc định khi tải gói tiện ích. Dashboard xác minh TXT và CNAME. Render cấp chứng chỉ. Cấu hình **Origin được phép** riêng cho các frontend cần CORS. Backend MacFlow gọi trực tiếp không cần thêm origin.
+
+## Cập nhật gateway từ web
+
+Thiết lập một lần một Web Service riêng từ Blueprint [render-updater.yaml](../render-updater.yaml), chọn đúng Blueprint Path. Dịch vụ dùng [Dockerfile.updater](../Dockerfile.updater), có persistent disk riêng và tắt Auto-Deploy. Mô hình này thêm một Web Service và một disk có phí. Thiết lập gateway bằng `render.yaml` trước để có bản deploy đang chạy làm mốc.
+
+Điền các biến sau cho **dịch vụ cập nhật**:
+
+| Biến | Giá trị |
+| --- | --- |
+| `BRIDGE_UPDATER_PUBLIC_URL` | Origin HTTPS của dịch vụ cập nhật |
+| `BRIDGE_UPDATER_TARGET_SERVICE_ID` | ID `srv-...` của **gateway** cần cập nhật |
+| `BRIDGE_UPDATER_RENDER_KEY` | API key Render của workspace được quyền đọc và deploy gateway |
+| `BRIDGE_UPDATER_PASSWORD` | Mật khẩu riêng của mục cập nhật, ít nhất 24 ký tự |
+| `BRIDGE_UPDATER_TARGET_REPO`, `BRIDGE_UPDATER_TARGET_BRANCH` | Repo và nhánh mà gateway đã liên kết. Blueprint đặt mặc định `mktminhqpbga-glitch/AI-Br`, nhánh `main` |
+| `BRIDGE_UPDATER_GITHUB_TOKEN` | Chỉ đặt nếu repo riêng tư. Dùng token chỉ đọc nội dung repo |
+
+Render cung cấp `RENDER_SERVICE_ID` cho chính updater để ứng dụng chặn tự deploy. Tắt **Auto-Deploy** ở gateway để mỗi lần cập nhật dùng commit đã được xác nhận. Trên gateway, đặt `BRIDGE_UPDATE_URL` thành origin HTTPS của updater. Mục **Cập nhật** trên dashboard sẽ mở dịch vụ độc lập này. Có thể lưu URL updater để tiếp tục theo dõi khi gateway đang khởi động.
+
+Mở updater, đăng nhập bằng mật khẩu riêng, xem commit đang chạy và commit mới nhất, rồi mở diff GitHub nếu cần. Khi bấm **Triển khai commit mới**, ứng dụng xác minh lại repo, nhánh, lịch sử Git nối tiếp và trạng thái Render. Render build đúng SHA đã duyệt. Nếu commit thay đổi trong lúc xem trước hoặc đang có deploy khác, updater yêu cầu kiểm tra lại. Nếu mất phản hồi sau khi bấm, mục này giữ bản ghi và tra lại deploy trước khi cho phép gửi tiếp.
+
+Các lần cập nhật này chỉ áp dụng cho gateway. Updater giữ URL, tiến trình và lịch sử riêng. Gateway dùng một instance có đĩa bền vững, nên Render vẫn có thể ngắt ngắn kết nối của gateway trong lúc thay phiên bản. Chọn lúc không có tác vụ đang chạy. Disk nhiệm vụ và kho đối tượng vẫn được tái sử dụng khi gateway khởi động lại.
 
 ## Ghép Chrome và cấu hình model
 
@@ -76,9 +97,10 @@ Bộ cloud dựng reverse proxy HTTPS, kết nối WSS và kho tương thích gi
 
 | Phần | Kết quả |
 | --- | --- |
-| API local và cloud | PASS, 26 bài. Đã kiểm thử scope, cấu hình model qua dashboard, ghép một lần, WSS, tab bận, streaming chat, tải media đúng SHA-256, phục hồi sau restart và thống kê chống đếm trùng. |
+| API local, cloud và cập nhật | PASS, 31 bài. Đã kiểm thử scope, dashboard, WSS, tải media đúng SHA-256, dọn tệp cũ và bảo vệ tệp đang dùng, xác nhận commit và chặn gửi deploy trùng. GitHub và Render API trong các bài updater dùng mô phỏng. |
 | Tiện ích và DOM | PASS, 1 bài Chromium với trang AI giả lập. Đã chạy code kiểm tra ảnh tham chiếu, đúng tab, F5, upload ảnh và video. Chrome API dùng mô phỏng. |
 | Docker | PASS, build bằng cache npm nạp từ registry theo lockfile. Container chạy với UID 1000 và volume ghi được, phục vụ `/health`, dashboard và bảo vệ `/v1/models`. |
+| Docker updater | PASS. Build và khởi động updater riêng với UID 1000 và disk riêng. Kiểm tra `/health`, giao diện và yêu cầu đăng nhập. |
 | Blueprint và OpenAPI | PASS, YAML đọc được và mọi tham chiếu OpenAPI phân giải được. |
 | Render, bucket, domain và tài khoản AI thật | Chờ nghiệm thu với tài khoản và cấu hình được cấp quyền. |
 

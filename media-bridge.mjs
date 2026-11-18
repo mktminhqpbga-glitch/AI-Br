@@ -257,7 +257,7 @@ export function createMediaBridge({
     save(task);
     bindResponse(response, task);
     cloud?.audit(task, "queued");
-    queue.push({ task, prompt, tools, response: asynchronous ? null : response });
+    queue.push({ task, prompt, tools, releaseInputs: store.pin(ids), response: asynchronous ? null : response });
     if (asynchronous) sendJson(response, 202, publicTask(task));
     dispatch();
   }
@@ -300,10 +300,10 @@ export function createMediaBridge({
     return complete(response, task.model, task.content, tools, task.media, task.stream);
   }
 
-  function readInputs(ids, owner) {
+  function readInputs(ids, owner, queued = false) {
     let size = 0;
     return ids.map((id) => {
-      const input = store.readInput(id, owner);
+      const input = store.readInput(id, owner, queued);
       if (!input || (size += input.metadata.size) > MAX_INPUT_TOTAL) throw invalidInput();
       return input;
     });
@@ -320,7 +320,7 @@ export function createMediaBridge({
           || job.task.media_kind !== "auto" && !policy.kinds.includes(job.task.media_kind === "none" ? "text" : job.task.media_kind))) throw unsupported();
         const output = tab.outputKinds.filter((kind) => job.task.allowed.includes(kind) && (!policy || policy.kinds.includes(kind)));
         if (!output.length) throw unsupported();
-        const input = readInputs(job.task.input_images, job.task.owner).map(({ metadata, bytes }) => ({ ...metadata, data: bytes.toString("base64") }));
+        const input = readInputs(job.task.input_images, job.task.owner, true).map(({ metadata, bytes }) => ({ ...metadata, data: bytes.toString("base64") }));
         job.task = transition(job.task, "running");
         job.client = client;
         job.outputKinds = output;
@@ -377,6 +377,7 @@ export function createMediaBridge({
       || media.length === 0 && !job.outputKinds.includes("text")) throw invalidMedia();
     if (media.length) cloud?.audit(job.task, "media_uploaded");
     const saved = [];
+    const releaseOutputs = store.pin([job.task.task_id]);
     try {
       for (const [index, descriptor] of media.entries()) {
         const file = job.files.get(index);
@@ -397,6 +398,7 @@ export function createMediaBridge({
       });
     } finally {
       if (job.task.status !== "completed") for (const file of saved) await store.removeOutput(file.id).catch(() => {});
+      releaseOutputs();
     }
   }
 
@@ -454,6 +456,7 @@ export function createMediaBridge({
 
   function settle(job, state, error, result, advance = true, layer) {
     clearTimeout(job.timer);
+    job.releaseInputs();
     const safeError = error instanceof BridgeError ? error
       : new BridgeError(500, "STORAGE_ERROR", "Unable to save the task on the bridge host.");
     try {

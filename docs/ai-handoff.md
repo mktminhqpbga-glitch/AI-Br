@@ -25,7 +25,7 @@ Chrome của người dùng ── WSS chủ động ────┘
 
 - **Local** là chế độ mặc định. Bind loopback, cổng chính `4319`, cổng tương thích `4317` khi không đặt cổng riêng. `BRIDGE_API_KEY` bật xác thực cho model, status và media. Tiện ích local dùng token từ `.ai-bridge-token`. Chat cũ vẫn có đường xử lý riêng và hỗ trợ SSE.
 - **Cloud** dùng `BRIDGE_MODE=cloud`. Node bind `0.0.0.0:$PORT`, mặc định `10000`, bên trong Render. Render kết thúc HTTPS/WSS. Gateway ngoài `/health` kiểm tra hostname và `X-Forwarded-Proto: https`. Nếu tự host, dùng reverse proxy tin cậy ghi đè các header này, giữ upstream riêng. Browser do người dùng chạy, container production chỉ chứa gateway, dashboard, FFmpeg và công cụ đóng gói.
-- Triển khai một instance. Persistent disk `/var/data/ai-bridge` giữ cấu hình, bản ghi tác vụ/idempotency, sự kiện, metadata và bản ảnh tham chiếu phục vụ điều phối. Kho S3 riêng giữ đối tượng ảnh/video. Node xác minh bytes trước khi lưu và đối chiếu lại checksum khi tải. Mặc định quota media 2 GiB, thời hạn 168 giờ, thống kê sự kiện 30 ngày. Thiết lập lifecycle bucket cho cùng prefix để thu dọn cả đối tượng mồ côi.
+- Triển khai một instance. Persistent disk `/var/data/ai-bridge` giữ cấu hình, bản ghi tác vụ/idempotency, sự kiện, metadata và bản ảnh tham chiếu phục vụ điều phối. Kho S3 riêng giữ đối tượng ảnh/video. Node xác minh bytes trước khi lưu và đối chiếu lại checksum khi tải. Mặc định quota media 2 GiB, thời hạn 24 giờ và dọn tệp cũ khi vượt 70%, thống kê sự kiện 30 ngày. Thiết lập lifecycle bucket cho cùng prefix để thu dọn cả đối tượng mồ côi.
 
 ## 3. Bản đồ mã nguồn
 

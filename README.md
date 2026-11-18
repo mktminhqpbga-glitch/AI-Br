@@ -122,7 +122,9 @@ prompt-instructions/
 
 ## Cloud Control Center on Render
 
-Cloud mode runs the gateway, Vietnamese dashboard and durable task tracking on Render. The user's existing Chrome connects out over WSS after one-time pairing. See the [Render deployment and cloud API guide](docs/cloud-render.md) and [OpenAPI contract](cloud-ui/openapi.json).
+Cloud mode runs the gateway, Vietnamese dashboard and durable task tracking on Render. The user's existing Chrome connects out over WSS after one-time pairing. Media expires after 24 hours by default. The gateway removes the oldest eligible objects when usage exceeds 70% of its quota. See the [Render deployment and cloud API guide](docs/cloud-render.md) and [OpenAPI contract](cloud-ui/openapi.json).
+
+Use the separate [updater blueprint](render-updater.yaml) to compare the active gateway commit with GitHub and deploy a verified commit from the web.
 
 ## MacFlow and Toonflow media API
 
