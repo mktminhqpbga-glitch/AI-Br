@@ -207,7 +207,7 @@ async function chromeApiFixture(cdp, bridgePort, context) {
     });
   });
 
-  const scripts = await Promise.all(["media-adapters.js", "content.js"].map((file) => fs.readFile(path.join("extension", file), "utf8")));
+  const scripts = await Promise.all(["media-adapters.js", "muse-adapter.js", "content.js"].map((file) => fs.readFile(path.join("extension", file), "utf8")));
   return {
     check() { if (error) throw error; },
     async open(url) {
@@ -311,7 +311,70 @@ document.querySelector('button').onclick = () => {
 };
 </script>`;
 
-test("the extension code pins a Chromium fixture tab, verifies attachments and returns image/video artifacts", { timeout: 65_000 }, async (t) => {
+const MUSE_PAGE = `<!doctype html><meta charset="utf-8"><title>Muse fixture</title>
+<section id="history">
+  <div data-message-author-role="user">Earlier request</div>
+  <div data-message-author-role="assistant"><img src="/media/old.png"></div>
+</section>
+<form id="editor" data-testid="hatch-composer">
+  <textarea id="draft" placeholder="Message"></textarea>
+  <input id="references" type="file" accept="image/*">
+  <div id="cards"></div>
+  <button id="send" data-testid="hatch-composer-send-button">Send</button>
+</form>
+<script>
+window.clicks = 0;
+window.attached = [];
+const draft = document.getElementById("draft");
+const references = document.getElementById("references");
+const editor = document.getElementById("editor");
+const cards = document.getElementById("cards");
+const history = document.getElementById("history");
+const send = document.getElementById("send");
+if (location.pathname.endsWith("ambiguous")) editor.append(send.cloneNode(true));
+else {
+  delete send.dataset.testid;
+  send.innerHTML = '<svg width="24" height="24"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>';
+}
+references.addEventListener("change", () => {
+  const file = references.files[0];
+  window.attached.push({ name: file.name, size: file.size });
+  const card = document.createElement("div");
+  card.dataset.testid = "hatch-chat-attachment-presentation-" + window.attached.length;
+  card.textContent = file.name;
+  cards.append(card);
+  references.value = "";
+});
+function turn(role, text) {
+  const element = document.createElement("div");
+  element.dataset.messageAuthorRole = role;
+  element.textContent = text;
+  history.append(element);
+}
+editor.addEventListener("submit", (event) => {
+  event.preventDefault();
+  window.clicks++;
+  const prompt = draft.value;
+  const id = prompt.match(/\\[REQUEST_BEGIN:([\\w-]+)\\]/)[1];
+  turn("user", prompt);
+  draft.value = "";
+  cards.replaceChildren();
+  turn("assistant", "[RESPONSE_BEGIN:" + id + "] Fixture Muse answer");
+  if (/exactly one image/.test(prompt)) {
+    const image = document.createElement("img");
+    image.src = "/media/image.png";
+    history.append(image);
+  } else if (/exactly one video/.test(prompt)) {
+    const video = document.createElement("video");
+    video.preload = "auto";
+    video.src = "/media/video.mp4";
+    history.append(video);
+  }
+  turn("assistant", "[RESPONSE_END:" + id + "]");
+});
+</script>`;
+
+test("the extension verifies pinned tabs and media on ChatGPT, Grok and Muse fixtures", { timeout: 100_000 }, async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "ai-bridge-chrome-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const make = async (name, color, options) => {
@@ -354,8 +417,11 @@ test("the extension code pins a Chromium fixture tab, verifies attachments and r
       bytes = video;
       mime = "video/mp4";
       headers.push({ name: "Access-Control-Allow-Origin", value: "https://grok.com" });
+    } else if (url.hostname === "muse.ai" && url.pathname.startsWith("/media/")) {
+      bytes = { "/media/old.png": oldImage, "/media/image.png": image, "/media/video.mp4": video }[url.pathname];
+      mime = url.pathname.endsWith(".mp4") ? "video/mp4" : "image/png";
     } else {
-      bytes = Buffer.from(url.hostname === "chatgpt.com" ? CHAT_PAGE : GROK_PAGE);
+      bytes = Buffer.from({ "chatgpt.com": CHAT_PAGE, "muse.ai": MUSE_PAGE }[url.hostname] ?? GROK_PAGE);
       mime = "text/html";
     }
     headers.push({ name: "Content-Type", value: mime }, { name: "Content-Length", value: String(bytes.length) });
@@ -432,4 +498,28 @@ test("the extension code pins a Chromium fixture tab, verifies attachments and r
   assert.equal(refused.status, 422);
   assert.equal((await refused.json()).error.code, "INPUT_IMAGE_INVALID");
   assert.equal(await cdp.evaluate(noAttachment, "window.clicks"), 0);
+
+  const museUrl = "https://muse.ai/thread/fixture";
+  const muse = await fixture.open(museUrl);
+  const museTab = await findTab(museUrl, "image");
+  assert.deepEqual(museTab.outputKinds, ["text", "image", "video"]);
+  assert.equal(museTab.input_image_support, true);
+  await checkFile(await completion(museTab, "image", [id]), image, "image");
+  const [museReference] = await cdp.evaluate(muse, "window.attached");
+  assert.equal(museReference.size, oldImage.length);
+  assert.match(museReference.name, /^bridge-1-[\da-f]{8}\.png$/);
+  await waitFor("Muse composer ready", async () => (await status()).tabs.some((tab) => tab.tabId === museTab.tabId && !tab.busy));
+  await checkFile(await completion(museTab, "video"), video, "video");
+  await waitFor("Muse ready for text", async () => (await status()).tabs.some((tab) => tab.tabId === museTab.tabId && !tab.busy));
+  const museText = await completion(museTab, "none");
+  assert.equal(museText.status, 200);
+  assert.equal((await museText.json()).choices[0].message.content, "Fixture Muse answer");
+  assert.equal(await cdp.evaluate(muse, "window.clicks"), 3);
+
+  const ambiguousMuseUrl = "https://muse.ai/thread/ambiguous";
+  const ambiguousMuse = await fixture.open(ambiguousMuseUrl);
+  const blocked = await completion(await findTab(ambiguousMuseUrl, "image"), "image");
+  assert.equal(blocked.status, 409);
+  assert.equal((await blocked.json()).error.code, "PROMPT_CONTROL_UNAVAILABLE");
+  assert.equal(await cdp.evaluate(ambiguousMuse, "window.clicks"), 0);
 });

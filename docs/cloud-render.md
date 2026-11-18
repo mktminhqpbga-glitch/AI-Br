@@ -73,8 +73,16 @@ Các lần cập nhật này áp dụng cho gateway. Updater giữ URL, tiến t
 1. Vào **Chrome và tiện ích**, tải gói, giải nén rồi tự nạp thư mục `extension` bằng **Load unpacked**. Tạo mã ghép nối mới, có hiệu lực 10 phút và dùng một lần.
 2. Mở popup, xác nhận URL HTTPS và nhập mã. Tiện ích lưu thông tin kết nối trong vùng lưu trữ Chrome dành cho ngữ cảnh tin cậy. Khi ghép xong, tiện ích tự kết nối lại, gửi inventory và nhận model đã cấu hình. Chỉ mở và đăng nhập tab AI bằng Chrome của người dùng.
 3. Tại **AI và model**, đặt ID API, chọn adapter và khả năng được phép, rồi ghim đúng Profile, tab và phiên tài liệu nếu client sẽ gọi không có `target`. Nếu để MacFlow chọn đích, gửi cả bốn trường trong `target` lấy từ status. Khi reload hoặc đổi phiên, chọn lại phiên. Khi tab bận hoặc offline, gateway trả lỗi và giữ nguyên đích.
-4. Tab tạo ảnh hoặc video cần báo đúng loại trong `outputKinds`. Bản này dùng adapter ảnh ChatGPT và video Grok Imagine khi nhận diện được chế độ phù hợp, cùng các adapter văn bản hiện có. API loại bỏ khả năng mà quản trị viên chưa bật. Ảnh tham chiếu được kiểm tra lại trong trình soạn thảo trước khi bấm gửi. Chỉ lựa chọn được nhà cung cấp có adapter tích hợp. Muse, thời lượng, độ phân giải và cấu hình video từ ảnh cần adapter tương ứng để có thể công bố. Các trường tạo media không hỗ trợ bị từ chối.
+4. Tab tạo ảnh hoặc video cần báo đúng loại trong `outputKinds`. Có adapter ảnh ChatGPT, video Grok Imagine và adapter Muse cho văn bản, ảnh và video. API chỉ công bố loại đầu ra được bật trên model và được tab hỗ trợ. Ảnh tham chiếu cần có ô tải phù hợp trong trình soạn thảo. Các trường tạo media như thời lượng và độ phân giải cần adapter riêng để công bố.
 5. Trong **Cấu hình API**, tạo key riêng cho MacFlow với các quyền cần dùng. **read** đọc model, status và tác vụ, **generate** gửi tác vụ hoặc hủy tác vụ còn chờ, **upload** tải ảnh tham chiếu, **download** tải bytes kết quả. Các tài nguyên tác vụ và media thuộc riêng key đã tạo chúng. Mật khẩu quản trị, phiên quản trị, mã ghép nối, thông tin thiết bị và API key dùng cho các mục đích tách biệt.
+
+### Bật Muse trên bản 0.7.1
+
+1. Sau khi cập nhật gateway, vào **Chrome và tiện ích** và tải lại ZIP. Giải nén đè vào đúng thư mục extension đã nạp, bấm **Reload** ở `chrome://extensions` rồi tải lại tab Muse. Nếu dùng thư mục mới, ghép nối lại Chrome với gateway bằng mã mới.
+2. Mở `https://muse.ai/thread/new` trong Chrome đã ghép nối, đăng nhập và để trống ô **Message**. Tạo model `bridge-muse` trong **AI và model**, chọn nhà cung cấp **Muse**, bật loại đầu ra cần dùng rồi chọn tab Muse để ghim đích. Chọn lại đích nếu Muse đã chuyển từ trang tạo hội thoại sang URL của hội thoại mới.
+3. Làm mới model trong MacFlow. Gọi văn bản qua Chat Completions, ảnh qua Images hoặc media tasks, và video qua Videos hoặc media tasks. Dùng cùng Base URL và API key đang kết nối AI-Br.
+
+Adapter Muse dùng ô soạn thảo trên trình duyệt và xác minh lượt gửi theo ID tác vụ trước khi thu kết quả. Gateway xác minh nội dung và checksum trước khi trả file. Media hỗ trợ PNG, JPEG, WebP, MP4 và WebM, tối đa 16 MiB mỗi file. Adapter nhận tệp HTTPS trên miền Muse và blob tạo trong tab. Kết quả kiểm thử dùng giao diện giả lập. Việc tạo media trên phiên Muse thật còn phụ thuộc vào giao diện, quyền và hạn mức tài khoản.
 
 ## Kết nối MacFlow
 

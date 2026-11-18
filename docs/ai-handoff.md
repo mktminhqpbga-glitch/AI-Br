@@ -1,4 +1,4 @@
-# Bàn giao cho AI tiếp nhận — AI-Br 0.7.0
+# Bàn giao cho AI tiếp nhận — AI-Br 0.7.1
 
 Bàn giao ngày 18/11/2026 theo giờ Việt Nam. Repo đích là `mktminhqpbga-glitch/AI-Br`. Workspace là `/workspace/AI-Br`.
 
@@ -110,7 +110,7 @@ Trong container CI cần thiết, chạy `CHROME_NO_SANDBOX=1 npm run test:brows
 1. **Quyền và cấu hình Render.** Cần quyền tạo Web Service, hostname HTTPS chuẩn và bucket S3 riêng với quyền get/put/delete theo prefix. Nhập `BRIDGE_PUBLIC_URL`, `BRIDGE_ADMIN_PASSWORD` và các biến `BRIDGE_S3_*` qua giao diện secret. Blueprint chọn một instance Starter và persistent disk 10 GB. Kiểm tra giá trong tài khoản trước khi triển khai.
 2. **Smoke test cloud thật, không phát sinh yêu cầu tạo media.** Kiểm tra TLS, `/health`, vào dashboard, tạo mã dùng một lần, tải gói extension và nạp thủ công lên Chrome của người dùng. Xác minh pairing, reconnect, heartbeat, mô hình quyền hạn và inventory tab. Dùng một máy khác gọi model/status với Bearer đúng scope. Nếu có domain riêng, kiểm tra Render TLS và DNS TXT/CNAME theo hướng dẫn triển khai.
 3. **Tích hợp job và khôi phục.** Trên endpoint thật, kiểm tra lỗi stale/busy, cách MacFlow giữ `client_request_id` và `task_id`, cùng khả năng poll sau restart. Khi cần thử media thật, xin quyền sử dụng hạn mức, chạy mẫu nhỏ và kiểm tra tải bytes, MIME/SHA-256 và trace xuyên suốt.
-4. **Giới hạn live adapter.** Adapter ảnh hiện nhắm ChatGPT khi nhận diện chế độ tạo ảnh. Adapter video nhắm Grok Imagine khi nhận diện điều khiển phù hợp. Chưa có bằng chứng live cho hai adapter. Muse, video từ ảnh, thời lượng và độ phân giải cần adapter và kiểm chứng riêng trước khi bật. MCP từ xa là phần bổ sung tùy chọn, hiện dashboard và giao diện ứng dụng dùng API HTTP đã tài liệu hóa.
+4. **Giới hạn live adapter.** ChatGPT hỗ trợ ảnh khi nhận diện chế độ tạo ảnh, Grok Imagine hỗ trợ video khi nhận diện điều khiển phù hợp, và Muse hỗ trợ văn bản, ảnh và video qua trình soạn thảo đã nhận diện. Các fixture kiểm tra nhận và xác minh đúng file. Tạo trên website thật cần nghiệm thu riêng. MCP từ xa là phần bổ sung tùy chọn. Dashboard và giao diện ứng dụng dùng API HTTP đã tài liệu hóa.
 5. **Giữ đúng giới hạn vận hành.** Mô hình hiện tại là một tiến trình với disk và object store chuyên dụng. Kiểm thử tải và phương án backup/recovery production nên được xác nhận trước khi tăng quy mô.
 
 ## Nguồn để đọc tiếp

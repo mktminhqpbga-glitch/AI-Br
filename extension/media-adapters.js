@@ -137,26 +137,40 @@ async function sha256Hex(bytes) {
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function attachImages(images, input, composer, assertPage) {
-  if (!images.length) return [];
-  if (!input?.isConnected || input.files.length || attachmentMarkers(composer).some((node) => (
-    node.matches("[data-testid='attachment-name'], img[alt]") || /remove (?:file|attachment)/i.test(node.getAttribute("aria-label") ?? "")
-  ))) throw bridgeSiteError("INPUT_IMAGE_INVALID");
-  const transfer = new DataTransfer();
-  const names = [];
+async function referenceFiles(images) {
+  const files = [];
   for (const [index, image] of images.entries()) {
     const extension = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" }[image.mime_type];
     if (!extension) throw bridgeSiteError("INPUT_IMAGE_INVALID");
     const bytes = Uint8Array.from(atob(image.data), (character) => character.charCodeAt(0));
     if (bytes.length !== image.size || await sha256Hex(bytes) !== image.sha256) throw bridgeSiteError("INPUT_IMAGE_INVALID");
     const name = `bridge-${index + 1}-${crypto.randomUUID().slice(0, 8)}.${extension}`;
-    names.push(name);
-    transfer.items.add(new File([bytes], name, { type: image.mime_type }));
+    files.push(new File([bytes], name, { type: image.mime_type }));
   }
-  assertPage();
+  return files;
+}
+
+function setInputFiles(input, files) {
+  const transfer = new DataTransfer();
+  for (const file of files) transfer.items.add(file);
   input.files = transfer.files;
+  if (input.files.length !== files.length || files.some((file, index) => {
+    const attached = input.files[index];
+    return attached.name !== file.name || attached.size !== file.size || attached.type !== file.type;
+  })) throw bridgeSiteError("INPUT_IMAGE_INVALID");
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+async function attachImages(images, input, composer, assertPage) {
+  if (!images.length) return [];
+  if (!input?.isConnected || input.files.length || attachmentMarkers(composer).some((node) => (
+    node.matches("[data-testid='attachment-name'], img[alt]") || /remove (?:file|attachment)/i.test(node.getAttribute("aria-label") ?? "")
+  ))) throw bridgeSiteError("INPUT_IMAGE_INVALID");
+  const files = await referenceFiles(images);
+  const names = files.map((file) => file.name);
+  assertPage();
+  setInputFiles(input, files);
   const until = Date.now() + 15_000;
   while (Date.now() < until) {
     assertPage();
@@ -251,9 +265,9 @@ async function waitForArtifact(capture, kind, assertRoute, maxWait, mayUseText, 
     if (result.files.length && !result.pending && Date.now() - changedAt >= 2800) {
       return { files: kind === "none" ? [] : result.files, text: result.text };
     }
-    if (!result.pending && result.text && Date.now() - changedAt >= 6500) {
-      if (mayUseText) return { files: [], text: result.text };
-      if (sawGenerating) throw bridgeSiteError("MEDIA_INVALID", "finished");
+    if (!result.pending && (result.text || result.finished) && Date.now() - changedAt >= 6500) {
+      if (mayUseText && result.text) return { files: [], text: result.text };
+      if (sawGenerating || result.finished) throw bridgeSiteError("MEDIA_INVALID", "finished");
     }
   }
   throw bridgeSiteError("TASK_UNKNOWN", "unknown");

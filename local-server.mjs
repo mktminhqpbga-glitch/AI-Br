@@ -19,7 +19,7 @@ import { createCloudControl, errorLayer } from "./cloud-control.mjs";
 const MAX_BODY_BYTES = 1_000_000;
 const MAX_QUEUE_LENGTH = 10;
 const REQUEST_TIMEOUT_MS = 240_000;
-const PROVIDERS = ["auto", "grok", "gemini", "deepseek", "perplexity", "qwen", "chatgpt", "claude", "zai", "kimi"];
+const PROVIDERS = ["auto", "grok", "gemini", "deepseek", "perplexity", "qwen", "chatgpt", "claude", "zai", "kimi", "muse"];
 if (PROVIDERS.slice(1).some((provider) => !PROVIDER_DISPLAY_NAMES[provider])) {
   throw new Error("PROVIDER_DISPLAY_NAMES is missing a provider from PROVIDERS.");
 }
@@ -53,6 +53,7 @@ const providerHosts = new Map([
   ["grok.com", "grok"], ["gemini.google.com", "gemini"], ["chat.deepseek.com", "deepseek"],
   ["www.perplexity.ai", "perplexity"], ["chat.qwen.ai", "qwen"], ["chat.qwenlm.ai", "qwen"],
   ["chatgpt.com", "chatgpt"], ["claude.ai", "claude"], ["chat.z.ai", "zai"], ["www.kimi.com", "kimi"],
+  ["muse.ai", "muse"], ["www.muse.ai", "muse"],
 ]);
 let mediaBridge;
 let cloud;

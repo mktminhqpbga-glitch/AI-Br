@@ -8,6 +8,7 @@ const PROVIDERS = {
   claude: { label: "Claude", home: "https://claude.ai/", matches: ["https://claude.ai/*"] },
   zai: { label: "Z.ai", home: "https://chat.z.ai/", matches: ["https://chat.z.ai/*"] },
   kimi: { label: "Kimi", home: "https://www.kimi.com/", matches: ["https://www.kimi.com/*"] },
+  muse: { label: "Muse", home: "https://muse.ai/thread/new", matches: ["https://muse.ai/*", "https://www.muse.ai/*"] },
 };
 
 const DEFAULT_SETTINGS = {

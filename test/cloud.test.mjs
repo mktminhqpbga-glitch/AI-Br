@@ -282,6 +282,9 @@ test("cloud gateway uses HTTPS/WSS, scopes, fenced tabs, durable media and trace
   const archiveFile = path.join(host.dir, "extension.zip");
   await fs.writeFile(archiveFile, archive.content);
   const manifest = JSON.parse((await exec("unzip", ["-p", archiveFile, "extension/manifest.json"])).stdout);
+  assert.ok(manifest.host_permissions.includes("https://muse.ai/*"));
+  assert.ok(manifest.content_scripts[0].js.includes("muse-adapter.js"));
+  await exec("unzip", ["-p", archiveFile, "extension/muse-adapter.js"]);
   assert.equal(manifest.homepage_url, host.base);
   assert.ok(manifest.host_permissions.includes(host.base + "/*"));
 
@@ -442,6 +445,30 @@ test("cloud gateway uses HTTPS/WSS, scopes, fenced tabs, durable media and trace
   assert.match(textResult.headers["content-type"], /^text\/event-stream/);
   assert.match(textResult.content.toString(), /Fixture streamed response/);
   assert.match(textResult.content.toString(), /data: \[DONE\]/);
+
+  const museTab = { ...refreshed, tabId: 101, provider: "muse", url: "https://muse.ai/thread/fixture" };
+  const museTarget = { profileInstanceId, tabId: museTab.tabId, documentToken: museTab.documentToken, url: museTab.url };
+  resumed.send({ type: "bridge:status", tabs: [refreshed, museTab] });
+  await waitFor("Muse inventory", async () => (await admin("dashboard")).json().inventory.tabs.some((entry) => entry.provider === "muse"));
+  assert.equal((await admin("models", "POST", { ...model, id: "bridge-muse", provider: "muse", target: museTarget })).status, 200);
+  const museModel = (await auth("/v1/models")).json().data.find((entry) => entry.id === "bridge-muse");
+  assert.deepEqual(museModel.capabilities, { outputKinds: ["text", "image", "video"], input_image_support: true });
+  const museRequest = { model: "bridge-muse", client_request_id: "muse-video", prompt: "Fixture Muse video" };
+  const museTask = await auth("/v1/videos", "POST", museRequest);
+  assert.equal(museTask.status, 202, museTask.content.toString());
+  const museRun = await resumed.run(1);
+  assert.equal(museRun.provider, "muse");
+  assert.equal(museRun.media_kind, "video");
+  assert.deepEqual(museRun.target, museTarget);
+  const museReport = await resumed.submit(museRun);
+  museReport("website-completed");
+  museReport("media-chunk", { index: 0, offset: 0, data: video.toString("base64") });
+  museReport("complete", { media: [{ kind: "video", mime_type: "video/mp4", size: video.length, sha256: sha(video) }] });
+  const museCompleted = await waitFor("Muse video completion", async () => {
+    const task = (await auth("/v1/videos/" + museTask.json().task_id)).json();
+    return task.status === "completed" ? task : null;
+  });
+  assert.deepEqual((await auth("/v1/media/" + museCompleted.media[0].id)).content, video);
 
   if (host.database) {
     const disconnected = once(resumed.peer, "close");

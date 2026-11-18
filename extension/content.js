@@ -12,6 +12,7 @@ const PROVIDER_DISPLAY_NAMES = {
   claude: "Claude",
   zai: "Z.ai",
   kimi: "Kimi",
+  muse: "Muse",
 };
 
 const SITE_CONFIG = {
@@ -84,6 +85,15 @@ function documentBusy() {
 }
 
 function pageState() {
+  if (PROVIDER === "muse") {
+    const composer = museComposer();
+    return {
+      url: pageUrl(), ready: Boolean(composer),
+      busy: documentBusy() || Boolean(composer && (composer.value.trim() || !museAttachmentsReady(composer, 0))),
+      outputKinds: composer ? MUSE_KINDS : [],
+      input_image_support: Boolean(composer && museAttachmentInput(composer)),
+    };
+  }
   const composer = PROVIDER && findVisible(SITE_CONFIG[PROVIDER].input);
   const adapter = mediaAdapter(PROVIDER, composer);
   const outputKinds = !composer ? [] : adapter?.kind === "video" ? ["video"] : ["text", ...(adapter?.kind ? [adapter.kind] : [])];
@@ -96,7 +106,7 @@ function pageState() {
   };
 }
 
-async function runPinnedRequest({ id, target, prompt, media_kind: kind, input_images: images }) {
+async function runPinnedRequest({ id, target, prompt, media_kind: kind, input_images: images, output_kinds: allowed }) {
   runningRequest = id;
   let clicked = false;
   const reportPinned = (message) => chrome.runtime.sendMessage({
@@ -107,38 +117,57 @@ async function runPinnedRequest({ id, target, prompt, media_kind: kind, input_im
     if (!reply?.ok) throw bridgeSiteError("TASK_UNKNOWN", clicked ? "unknown" : "before_submit");
   };
   try {
+    const muse = PROVIDER === "muse";
     const config = SITE_CONFIG[PROVIDER];
-    const composer = findVisible(config.input);
+    const composer = muse ? museComposer() : findVisible(config.input);
     const adapter = mediaAdapter(PROVIDER, composer);
-    if (!composer || (kind === "image" || kind === "video") && adapter?.kind !== kind
+    if (!composer || !muse && (kind === "image" || kind === "video") && adapter?.kind !== kind
       || kind === "none" && adapter?.kind === "video") throw bridgeSiteError("TAB_UNSUPPORTED");
-    if (images.length && !adapter?.attach) throw bridgeSiteError("INPUT_IMAGE_INVALID");
+    if (images.length && !(muse ? museAttachmentInput(composer) : adapter?.attach)) throw bridgeSiteError("INPUT_IMAGE_INVALID");
     const assertPage = () => {
-      if (target.url !== pageUrl() || !composer.isConnected) throw bridgeSiteError("TAB_STALE");
+      const current = muse ? museComposer() : composer;
+      if (target.url !== pageUrl() || !current?.isConnected) throw bridgeSiteError("TAB_STALE");
       if (isGenerating()) throw bridgeSiteError("TAB_BUSY");
+      return current;
     };
+    const promptText = resolvePromptModelName(prompt);
+    const museRun = muse ? prepareMuseRun(id, promptText, kind, allowed ?? MUSE_KINDS, target.url) : null;
     const assertRoute = () => {
+      if (museRun) return museRun.assertRoute();
       if (adapter ? !adapter.route(target.url, pageUrl()) : target.url !== pageUrl()) throw bridgeSiteError("TASK_UNKNOWN", "unknown");
     };
-    const text = resolvePromptModelName(prompt);
+    const text = museRun?.text ?? promptText;
+    const normalized = text.replace(/\s+/g, " ").trim();
+    const verifyDraft = () => {
+      const current = assertPage();
+      const draft = current.value ?? current.innerText;
+      if (draft.replace(/\s+/g, " ").trim() !== normalized) throw bridgeSiteError("TAB_BUSY");
+      return current;
+    };
     assertPage();
     if ((composer.value ?? composer.innerText).trim()) throw bridgeSiteError("TAB_BUSY");
-    const names = await attachImages(images, adapter?.attach, composer, assertPage);
-    assertPage();
-    setComposerText(composer, text);
+    let names;
+    if (museRun) {
+      if (!museAttachmentsReady(composer, 0)) throw bridgeSiteError("INPUT_IMAGE_INVALID");
+      setComposerText(composer, text);
+      await delay(120);
+      await museAttachImages(images, verifyDraft);
+    } else {
+      names = await attachImages(images, adapter?.attach, composer, assertPage);
+      setComposerText(assertPage(), text);
+    }
     await delay(120);
-    const capture = adapter?.capture(text);
+    const capture = museRun?.capture ?? adapter?.capture(text);
     const previousText = capture ? null : latestResponseText(config);
-    const button = adapter ? adapter.button : findSendButton;
     const verifyBeforeSend = () => {
-      assertPage();
-      if (!uploadedImagesVisible(composer, names)) throw bridgeSiteError("INPUT_IMAGE_INVALID");
-      const control = button();
+      const current = verifyDraft();
+      museRun?.beforeSend();
+      const attached = museRun ? museAttachmentsReady(current, images.length) : uploadedImagesVisible(current, names);
+      if (!attached) throw bridgeSiteError("INPUT_IMAGE_INVALID");
+      const control = museRun ? museSendButton(current) : adapter ? adapter.button() : findSendButton();
       if (!control || !isVisible(control) || control.disabled || control.getAttribute("aria-disabled") === "true") {
         throw bridgeSiteError("PROMPT_CONTROL_UNAVAILABLE");
       }
-      const draft = composer.value ?? composer.innerText;
-      if (draft.replace(/\s+/g, " ").trim() !== text.replace(/\s+/g, " ").trim()) throw bridgeSiteError("TAB_BUSY");
       return control;
     };
     verifyBeforeSend();
@@ -148,13 +177,14 @@ async function runPinnedRequest({ id, target, prompt, media_kind: kind, input_im
     control.click();
     let accepted = false;
     const observeSubmission = async () => {
-      if (accepted) return;
+      if (accepted || museRun && !museRun.receipt()) return;
       accepted = true;
       await emit({ type: "bridge:prompt-sent" });
     };
-    const captureKind = kind === "auto" && !adapter?.kind ? "none" : kind;
+    const captureKind = kind === "auto" && !museRun && !adapter?.kind ? "none" : kind;
+    const mayUseText = kind === "none" || kind === "auto" && (!museRun || (allowed ?? MUSE_KINDS).includes("text"));
     const result = capture
-      ? await waitForArtifact(capture, captureKind, assertRoute, 28 * 60_000, kind === "none" || kind === "auto", adapter.kind === "video", observeSubmission)
+      ? await waitForArtifact(capture, captureKind, assertRoute, 28 * 60_000, mayUseText, adapter?.kind === "video", observeSubmission)
       : { files: [], text: await streamLatestResponse(id, config, previousText, { assertRoute, observeSubmission }) };
     await emit({ type: "bridge:website-completed" });
     const media = await streamMedia(result.files, assertRoute, emit);
@@ -177,6 +207,24 @@ async function runRequest({ id, prompt }) {
   if (!PROVIDER) throw new Error("This page is not a supported AI chat site.");
   runningRequest = id;
   try {
+    if (PROVIDER === "muse") {
+      const composer = museComposer();
+      if (!composer || composer.value.trim() || !museAttachmentsReady(composer, 0)) throw new Error("Open a ready Muse tab with an empty composer.");
+      const run = prepareMuseRun(id, resolvePromptModelName(prompt), "none", ["text"], pageUrl());
+      setComposerText(composer, run.text);
+      await delay(120);
+      run.beforeSend();
+      const current = museComposer();
+      const button = museSendButton(current);
+      if (!button || current.value !== run.text || !museAttachmentsReady(current, 0) || isGenerating()) {
+        throw new Error("Muse's composer changed before sending.");
+      }
+      button.click();
+      const result = await waitForArtifact(run.capture, "none", run.assertRoute, 230_000, true, false, () => {});
+      report({ type: "bridge:chunk", id, text: result.text });
+      report({ type: "bridge:complete", id, text: result.text });
+      return;
+    }
     const config = SITE_CONFIG[PROVIDER];
     const previousText = latestResponseText(config);
     const composer = findVisible(config.input);
@@ -408,6 +456,11 @@ function cleanMarkdown(value) {
 }
 
 function isGenerating() {
+  if (PROVIDER === "muse") {
+    const composer = museComposer();
+    const editor = composer ? museEditor(composer) : document;
+    return [...editor.querySelectorAll('button[data-testid="hatch-composer-stop-button"], button[aria-label^="Stop" i], button[aria-label^="停止"]')].some(isVisible);
+  }
   return [...document.querySelectorAll("button[aria-label*='Stop' i], button[aria-label*='停止'], button[data-testid*='stop' i]")]
     .some(isVisible);
 }
@@ -434,6 +487,7 @@ function report(message) {
 }
 
 function detectProvider(host) {
+  if (museHost(host)) return "muse";
   if (host === "grok.com" || host.endsWith(".grok.com")) return "grok";
   if (host.endsWith("gemini.google.com")) return "gemini";
   if (host.endsWith("chat.deepseek.com")) return "deepseek";

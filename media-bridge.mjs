@@ -338,6 +338,7 @@ export function createMediaBridge({
       client.send({
         type: "bridge:run", id: job.task.task_id, provider: job.task.provider, target: job.task.target, model: job.task.model,
         media_kind: job.task.media_kind === "auto" && output.length === 1 ? (output[0] === "text" ? "none" : output[0]) : job.task.media_kind,
+        output_kinds: output,
         prompt: job.prompt, input_images: input, request_id: job.task.request_id, trace_id: job.task.trace_id,
       });
       cloud?.audit(job.task, "dispatched");

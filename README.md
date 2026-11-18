@@ -19,6 +19,7 @@ IDE / agent ──HTTP──> 127.0.0.1:4319/v1 ──WebSocket──> Chrome ex
 - [Claude](https://claude.ai/)
 - [Z.ai](https://chat.z.ai/)
 - [Kimi](https://www.kimi.com/)
+- [Muse](https://muse.ai/thread/new)
 
 This project borrows the practical idea of a web-chat-to-OpenAI gateway from [geminiweb-as-api](https://github.com/hieonn/geminiweb-as-api) and the extension-first direction of [Quarkonix](https://github.com/nikita-nikita12308/Quarkonix), without copying browser profiles or exposing a remote server.
 
@@ -139,7 +140,7 @@ AI-Br 0.6 adds authenticated tab discovery, reference-image upload, pinned gener
 - Pinned media requests support reference images and output files for supported tab modes. Inline image parts in regular text chat, provider-specific citations, and native tool execution are outside the API contract. When the IDE sends a `tools` array, the bridge best-effort detects JSON tool-call text from the chat tab (bare, fenced, or prose-wrapped) and returns OpenAI `tool_calls` for both streaming and non-streaming requests.
 - Claude responses are intentionally emitted once its final response block is stable, rather than streaming its intermediate thinking/status blocks into the IDE.
 - Keep the requested provider page fully loaded. If a request says the content script is not ready, reload that tab.
-- The extension has permissions only for the nine named chat websites and localhost; it does not have broad `<all_urls>` access.
+- Site permissions are scoped to the supported chat websites. Cloud pairing requests access to the selected HTTPS gateway.
 
 ## Development
 
