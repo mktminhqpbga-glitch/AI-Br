@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Bridge · Bảng điều khiển</title>
+<link rel="stylesheet" href="/dashboard.css">
+<script defer src="/dashboard.js"></script>
+</head>
+<body>
+<main id="sign-in" class="sign-in">
+  <form id="login" class="panel">
+    <div class="brand"><span class="brand-icon">↯</span> AI Bridge</div>
+    <h1>Đăng nhập quản trị</h1>
+    <label>Mật khẩu <input required type="password" name="password" autocomplete="current-password"></label>
+    <button>Đăng nhập</button>
+    <p id="login-error" role="alert"></p>
+  </form>
+</main>
+<div id="app" class="shell" hidden>
+  <aside>
+    <div class="brand"><span class="brand-icon">↯</span> AI Bridge <small>Cloud</small></div>
+    <nav aria-label="Điều hướng">
+      <button data-section="overview" aria-current="page">Tổng quan</button>
+      <button data-section="models">AI và model</button>
+      <button data-section="chrome">Chrome và tiện ích</button>
+      <button data-section="api">Cấu hình API</button>
+      <button data-section="tasks">Tác vụ và chẩn đoán</button>
+    </nav>
+    <div class="sidebar-bottom"><a href="/openapi.json">Tài liệu OpenAPI ↗</a><button type="button" id="logout" class="secondary">Đăng xuất</button></div>
+  </aside>
+  <main class="content">
+    <header class="topbar">
+      <h1 id="page-title">Tổng quan</h1>
+      <div><span class="connection" id="online"></span><button id="refresh" class="secondary">Làm mới</button></div>
+    </header>
+    <p class="alert" id="error" role="alert" hidden></p>
+    <section id="overview">
+      <form id="period" class="toolbar">
+        <label>Từ <input name="from" type="datetime-local"></label>
+        <label>Đến <input name="to" type="datetime-local"></label>
+        <button class="secondary">Áp dụng</button>
+      </form>
+      <div class="metrics" id="metrics"></div>
+      <div class="panel"><h2>Kho media</h2><p id="storage"></p></div>
+    </section>
+    <section id="models" hidden>
+      <div class="panel">
+        <h2>Cấu hình model</h2>
+        <form id="model-form" class="form-grid">
+          <label>Model ID dùng trong API <input name="id" maxlength="80" required placeholder="bridge-chatgpt"></label>
+          <label>Nhà cung cấp <select name="provider" required></select></label>
+          <label class="wide">Profile, tab và phiên trang <select name="target"></select></label>
+          <fieldset class="wide"><legend>Cho phép khi tab xác nhận hỗ trợ</legend>
+            <label><input type="checkbox" name="text" checked> Văn bản</label>
+            <label><input type="checkbox" name="image"> Ảnh</label>
+            <label><input type="checkbox" name="video"> Video</label>
+            <label><input type="checkbox" name="inputImages"> Ảnh tham chiếu</label>
+            <label><input type="checkbox" name="enabled" checked> Bật model</label>
+          </fieldset>
+          <div><button>Lưu model</button> <button type="button" class="secondary" id="clear-model">Tạo model mới</button></div>
+        </form>
+      </div>
+      <div class="panel"><h2>Model đã cấu hình</h2><div class="table-wrap"><table id="model-table"></table></div></div>
+    </section>
+    <section id="chrome" hidden>
+      <div class="panel">
+        <h2>Ghép nối tiện ích</h2>
+        <form id="pair-form" class="toolbar">
+          <label>Tên Chrome Profile <input name="name" maxlength="80" placeholder="Chrome thiết kế"></label>
+          <button>Tạo mã một lần</button>
+        </form>
+        <div id="pair-result"></div>
+        <form id="package-form" class="toolbar">
+          <label>Địa chỉ cấu hình trong tiện ích <select name="origin"></select></label>
+          <button class="secondary">Tải gói tiện ích</button>
+        </form>
+      </div>
+      <div class="panel"><h2>Chrome Profile</h2><div class="table-wrap"><table id="profile-table"></table></div></div>
+      <div class="panel"><h2>Tab AI</h2><div class="table-wrap"><table id="tab-table"></table></div></div>
+      <div class="panel"><h2>Lịch sử kết nối và trang</h2><div class="table-wrap"><table id="connection-table"></table></div></div>
+    </section>
+    <section id="api" hidden>
+      <div class="panel">
+        <h2>Địa chỉ và kiểm tra kết nối</h2>
+        <div id="endpoints"></div>
+        <form id="probe-form" class="toolbar">
+          <label>Endpoint <select name="path"><option>/health</option><option>/v1/models</option><option>/api/bridge/status</option></select></label>
+          <label>API Key <input name="key" type="password" autocomplete="off" placeholder="Nếu endpoint yêu cầu"></label>
+          <button class="secondary">Kiểm tra</button>
+        </form>
+        <pre id="probe-result" hidden></pre>
+      </div>
+      <div class="panel">
+        <h2>API Key</h2>
+        <form id="key-form" class="form-grid">
+          <label>Tên ứng dụng <input required maxlength="80" name="name"></label>
+          <fieldset class="wide"><legend>Quyền</legend>
+            <label><input type="checkbox" name="scope" value="read" checked> Dò model, tab và tác vụ</label>
+            <label><input type="checkbox" name="scope" value="generate" checked> Tạo tác vụ</label>
+            <label><input type="checkbox" name="scope" value="upload" checked> Tải ảnh tham chiếu</label>
+            <label><input type="checkbox" name="scope" value="download" checked> Tải kết quả</label>
+          </fieldset>
+          <div><button>Tạo API Key</button></div>
+        </form>
+        <div id="key-result"></div>
+        <div class="table-wrap"><table id="key-table"></table></div>
+      </div>
+      <div class="panel">
+        <h2>Origin được phép</h2>
+        <form id="origin-form">
+          <label>Mỗi dòng một HTTPS origin <textarea name="origins" rows="3" placeholder="https://macflow.example.com"></textarea></label>
+          <button>Lưu origin</button>
+        </form>
+      </div>
+      <div class="panel">
+        <h2>Tên miền riêng</h2>
+        <form id="domain-form" class="toolbar">
+          <label>Hostname đã thêm vào Render <input name="host" required placeholder="bridge.example.com"></label>
+          <button>Thêm tên miền</button>
+        </form>
+        <div class="table-wrap"><table id="domain-table"></table></div>
+      </div>
+    </section>
+    <section id="tasks" hidden>
+      <div class="panel">
+        <h2>Lọc tác vụ</h2>
+        <form id="task-filters" class="toolbar">
+          <label>Từ <input name="from" type="datetime-local"></label><label>Đến <input name="to" type="datetime-local"></label>
+          <label>Nhà cung cấp <select name="provider"></select></label><label>Model <input name="model"></label>
+          <label>ID tab <input name="tab" type="number" min="0"></label>
+          <label>Loại <select name="media_kind"><option value="">Tất cả</option><option>none</option><option>auto</option><option>image</option><option>video</option></select></label>
+          <label>Trạng thái <select name="status"><option value="">Tất cả</option><option>queued</option><option>running</option><option>completed</option><option>failed</option><option>cancelled</option><option>unknown</option></select></label>
+          <label>Vị trí lỗi <select name="layer"></select></label>
+          <button class="secondary">Lọc</button>
+        </form>
+      </div>
+      <div class="panel"><h2>Tác vụ</h2><div class="table-wrap"><table id="task-table"></table></div></div>
+      <div class="panel"><h2>Sự kiện API và lỗi</h2><div class="table-wrap"><table id="event-table"></table></div></div>
+    </section>
+  </main>
+</div>
+<dialog id="diagnostics">
+  <div class="dialog-heading"><h2>Truy vết tác vụ</h2><button type="button" class="secondary" id="close-dialog">Đóng</button></div>
+  <p id="trace-details"></p>
+  <div class="table-wrap"><table id="timeline-table"></table></div>
+  <button type="button" id="copy-report">Sao chép chẩn đoán</button>
+</dialog>
+</body>
+</html>

@@ -1,14 +1,22 @@
 {
   "name": "ai-bridge",
-  "version": "0.4.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "A local OpenAI-compatible bridge to AI chat tabs controlled by a Chrome extension.",
   "scripts": {
     "start": "node local-server.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "test:browser": "node --test integration/browser.mjs"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1171.0"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.65.1",
+    "ws": "^8.23.0"
   }
 }

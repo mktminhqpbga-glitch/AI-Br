@@ -46,9 +46,22 @@ async function save() {
   error.hidden = true;
   try {
     const url = new URL(serverUrl.value.trim());
-    if (!["http:", "https:"].includes(url.protocol)) throw new Error("Use an http:// or https:// local server URL.");
-    await chrome.storage.local.set({ serverUrl: url.toString().replace(/\/$/, ""), token: token.value.trim(), defaultProvider: defaultProvider.value });
-    chrome.runtime.sendMessage({ type: "bridge:reconnect" });
+    const loopback = ["127.0.0.1", "localhost"].includes(url.hostname);
+    if (url.username || url.password || !["http:", "https:"].includes(url.protocol) || (!loopback && url.protocol !== "https:")) {
+      throw new Error("Dùng URL HTTPS của bảng điều khiển hoặc URL loopback.");
+    }
+    if (loopback) {
+      await chrome.storage.local.set({ serverUrl: url.origin, token: token.value.trim(),
+        defaultProvider: defaultProvider.value, cloud: false });
+      chrome.runtime.sendMessage({ type: "bridge:reconnect" });
+    } else {
+      const origin = url.origin + "/*";
+      const granted = await chrome.permissions.request({ origins: [origin] });
+      if (!granted) throw new Error("Cần cấp quyền truy cập đúng địa chỉ của bảng điều khiển.");
+      const reply = await chrome.runtime.sendMessage({ type: "bridge:pair-cloud", url: url.origin, code: token.value.trim() });
+      if (!reply?.ok) throw new Error(reply?.error ?? "Không ghép nối được.");
+      token.value = "";
+    }
     status.textContent = "Connecting…";
     dot.className = "dot pending";
   } catch (cause) {
@@ -60,7 +73,7 @@ async function save() {
 function renderState(state) {
   const connected = state.socketState === "connected";
   const paused = state.socketState === "paused" || state.settings.paused;
-  status.textContent = connected ? "Connected to local bridge (always on)" : paused ? "Bridge paused" : state.socketState === "needs-token" ? "Bridge token required" : "Local bridge disconnected";
+  status.textContent = connected ? "Đã kết nối" : paused ? "Đã tạm dừng" : state.socketState === "needs-token" ? "Cần ghép nối" : "Chưa kết nối";
   pause.textContent = paused ? "Continue" : "Pause";
   dot.className = `dot ${connected ? "connected" : paused || state.socketState === "connecting" || state.socketState === "needs-token" ? "pending" : ""}`;
   if (state.lastError) {

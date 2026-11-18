@@ -1,0 +1,2556 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AI Bridge Cloud Gateway",
+    "version": "0.7.0",
+    "description": "API HTTPS tương thích OpenAI, có định tuyến tab và media riêng cho MacFlow/Toonflow. Chỉ model do quản trị viên bật được dùng. Mỗi tác vụ cloud yêu cầu khóa idempotency. Phần mở rộng API không thay đổi bản local."
+  },
+  "servers": [
+    {
+      "url": "https://{domain}",
+      "variables": {
+        "domain": {
+          "default": "example.onrender.com",
+          "description": "Hostname Render hoặc tên miền đã xác minh."
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "AppKey": []
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "security": [],
+        "summary": "Kiểm tra tiến trình",
+        "responses": {
+          "200": {
+            "description": "Tiến trình sẵn sàng.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "example": {
+                  "ok": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "summary": "Danh sách model",
+        "x-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Model đã bật và khả năng thực tế.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "list"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "object": {
+                            "type": "string",
+                            "enum": [
+                              "model"
+                            ]
+                          },
+                          "owned_by": {
+                            "type": "string"
+                          },
+                          "created": {
+                            "type": "integer"
+                          },
+                          "capabilities": {
+                            "type": "object",
+                            "properties": {
+                              "outputKinds": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "text",
+                                    "image",
+                                    "video"
+                                  ]
+                                }
+                              },
+                              "input_image_support": {
+                                "type": "boolean"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "object": "list",
+                  "data": [
+                    {
+                      "id": "bridge-image",
+                      "object": "model",
+                      "created": 0,
+                      "owned_by": "ai-bridge",
+                      "capabilities": {
+                        "outputKinds": [
+                          "image"
+                        ],
+                        "input_image_support": true
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "422": {
+            "$ref": "#/components/responses/Http422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "502": {
+            "$ref": "#/components/responses/Http502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          },
+          "504": {
+            "$ref": "#/components/responses/Http504"
+          },
+          "507": {
+            "$ref": "#/components/responses/Http507"
+          }
+        }
+      }
+    },
+    "/api/bridge/status": {
+      "get": {
+        "summary": "Trạng thái tab và tiện ích",
+        "x-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Inventory và hàng đợi.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connected_extensions": {
+                      "type": "integer"
+                    },
+                    "extension_versions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "providers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "tabs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "profileInstanceId": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "tabId": {
+                            "type": "integer"
+                          },
+                          "documentToken": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri"
+                          },
+                          "provider": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "ready": {
+                            "type": "boolean"
+                          },
+                          "busy": {
+                            "type": "boolean"
+                          },
+                          "outputKinds": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "text",
+                                "image",
+                                "video"
+                              ]
+                            }
+                          },
+                          "model_ids": {
+                            "type": "object",
+                            "description": "Model được dashboard bật và phù hợp với tab/phiên hiện tại, theo từng loại đầu ra.",
+                            "additionalProperties": {
+                              "type": "array",
+                              "items": { "type": "string" }
+                            }
+                          },
+                          "input_image_support": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
+                    "input_image_support": {
+                      "type": "boolean"
+                    },
+                    "active_request": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "queued_requests": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "example": {
+                  "connected_extensions": 1,
+                  "extension_versions": [
+                    "0.7.0"
+                  ],
+                  "providers": [
+                    {
+                      "id": "chatgpt",
+                      "label": "ChatGPT"
+                    }
+                  ],
+                  "tabs": [
+                    {
+                      "profileInstanceId": "2671ef2a-a9a1-4687-a7a4-aebbd22afd43",
+                      "tabId": 42,
+                      "documentToken": "82d07aa6-44fd-49d7-ab08-c1a95a8d54eb",
+                      "url": "https://chatgpt.com/c/example",
+                      "provider": "chatgpt",
+                      "title": "ChatGPT",
+                      "ready": true,
+                      "busy": false,
+                      "outputKinds": [
+                        "image"
+                      ],
+                      "model_ids": { "image": ["bridge-image"] },
+                      "input_image_support": true
+                    }
+                  ],
+                  "input_image_support": true,
+                  "active_request": null,
+                  "queued_requests": 0
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "422": {
+            "$ref": "#/components/responses/Http422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "502": {
+            "$ref": "#/components/responses/Http502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          },
+          "504": {
+            "$ref": "#/components/responses/Http504"
+          },
+          "507": {
+            "$ref": "#/components/responses/Http507"
+          }
+        }
+      }
+    },
+    "/v1/chat/completions": {
+      "post": {
+        "summary": "Chat đồng bộ; SSE cho văn bản",
+        "x-scope": "generate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "$ref": "#/components/schemas/Target"
+                  },
+                  "media_kind": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "auto",
+                      "image",
+                      "video"
+                    ]
+                  },
+                  "stream": {
+                    "type": "boolean"
+                  },
+                  "input_images": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "maxItems": 4
+                  },
+                  "messages": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "role": {
+                          "type": "string"
+                        },
+                        "content": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "content"
+                      ]
+                    }
+                  },
+                  "client_request_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "required": [
+                  "model",
+                  "messages"
+                ]
+              },
+              "example": {
+                "client_request_id": "macflow-node-1",
+                "model": "bridge-image",
+                "target": {
+                  "profileInstanceId": "2671ef2a-a9a1-4687-a7a4-aebbd22afd43",
+                  "tabId": 42,
+                  "documentToken": "82d07aa6-44fd-49d7-ab08-c1a95a8d54eb",
+                  "url": "https://chatgpt.com/c/example"
+                },
+                "media_kind": "image",
+                "stream": false,
+                "messages": [
+                  {
+                    "role": "user",
+                    "content": "Tạo ảnh phong cảnh."
+                  }
+                ],
+                "input_images": []
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Dùng header này hoặc client_request_id trong JSON. Gửi lại đúng payload với cùng khóa.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OpenAI Chat Completion với mảng media mở rộng.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "chat.completion"
+                      ]
+                    },
+                    "created": {
+                      "type": "integer"
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "choices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "index": {
+                            "type": "integer"
+                          },
+                          "message": {
+                            "type": "object",
+                            "properties": {
+                              "role": {
+                                "type": "string"
+                              },
+                              "content": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "tool_calls": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object"
+                                }
+                              }
+                            }
+                          },
+                          "finish_reason": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "media": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Media"
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "id": "chatcmpl-1",
+                  "object": "chat.completion",
+                  "created": 1763395200,
+                  "model": "bridge-image",
+                  "choices": [
+                    {
+                      "index": 0,
+                      "message": {
+                        "role": "assistant",
+                        "content": ""
+                      },
+                      "finish_reason": "stop"
+                    }
+                  ],
+                  "media": [
+                    {
+                      "id": "77e67229-5bfe-4159-80cf-05ecd2d103bb",
+                      "kind": "image",
+                      "mime_type": "image/png",
+                      "size": 123456,
+                      "sha256": "49bc6d3e13ba7133d5c08fde06c28d342646bc5408fb628c0ed60892cfa778bb"
+                    }
+                  ]
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Xin chào\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "422": {
+            "$ref": "#/components/responses/Http422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "502": {
+            "$ref": "#/components/responses/Http502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          },
+          "504": {
+            "$ref": "#/components/responses/Http504"
+          },
+          "507": {
+            "$ref": "#/components/responses/Http507"
+          }
+        }
+      }
+    },
+    "/v1/images/generations": {
+      "post": {
+        "summary": "Tạo ảnh đồng bộ; URL yêu cầu Bearer key",
+        "x-scope": "generate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": {
+                    "type": "string"
+                  },
+                  "prompt": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "$ref": "#/components/schemas/Target"
+                  },
+                  "input_images": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "maxItems": 4
+                  },
+                  "client_request_id": {
+                    "type": "string"
+                  },
+                  "n": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "response_format": {
+                    "type": "string",
+                    "enum": [
+                      "url",
+                      "b64_json"
+                    ]
+                  }
+                },
+                "required": [
+                  "model",
+                  "prompt"
+                ]
+              },
+              "example": {
+                "model": "bridge-image",
+                "prompt": "Tạo ảnh phong cảnh",
+                "response_format": "url",
+                "client_request_id": "image-1"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Dùng header này hoặc client_request_id trong JSON. Gửi lại đúng payload với cùng khóa.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Mảng data kiểu OpenAI cùng metadata.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "created": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "url": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "url"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "b64_json": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "b64_json"
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "media": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Media"
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "created": 1763395200,
+                  "data": [
+                    {
+                      "url": "https://example.onrender.com/v1/media/77e67229-5bfe-4159-80cf-05ecd2d103bb"
+                    }
+                  ],
+                  "media": [
+                    {
+                      "id": "77e67229-5bfe-4159-80cf-05ecd2d103bb",
+                      "kind": "image",
+                      "mime_type": "image/png",
+                      "size": 123456,
+                      "sha256": "49bc6d3e13ba7133d5c08fde06c28d342646bc5408fb628c0ed60892cfa778bb"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "422": {
+            "$ref": "#/components/responses/Http422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "502": {
+            "$ref": "#/components/responses/Http502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          },
+          "504": {
+            "$ref": "#/components/responses/Http504"
+          },
+          "507": {
+            "$ref": "#/components/responses/Http507"
+          }
+        }
+      }
+    },
+    "/v1/videos": {
+      "post": {
+        "summary": "Tạo video bất đồng bộ",
+        "x-scope": "generate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": {
+                    "type": "string"
+                  },
+                  "prompt": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "$ref": "#/components/schemas/Target"
+                  },
+                  "input_images": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "maxItems": 4
+                  },
+                  "client_request_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model",
+                  "prompt"
+                ]
+              },
+              "example": {
+                "model": "bridge-video",
+                "prompt": "Tạo clip chuyển động",
+                "client_request_id": "video-1"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Dùng header này hoặc client_request_id trong JSON. Gửi lại đúng payload với cùng khóa.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tác vụ đã có cùng khóa.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                },
+                "example": {
+                  "request_id": "c0c00745-58d3-4b89-828b-33189d46e0f3",
+                  "trace_id": "6bf38432-4a18-415b-b051-5ea6195f2fd5",
+                  "task_id": "b193e720-8579-4937-83d3-58993eb3962e",
+                  "client_request_id": "macflow-node-1",
+                  "status": "queued",
+                  "model": "bridge-image",
+                  "media_kind": "image",
+                  "target": {
+                    "profileInstanceId": "2671ef2a-a9a1-4687-a7a4-aebbd22afd43",
+                    "tabId": 42,
+                    "documentToken": "82d07aa6-44fd-49d7-ab08-c1a95a8d54eb",
+                    "url": "https://chatgpt.com/c/example"
+                  },
+                  "created_at": "2026-11-18T04:20:00Z",
+                  "updated_at": "2026-11-18T04:20:00Z"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Đã nhận tác vụ lần đầu.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                },
+                "example": {
+                  "request_id": "c0c00745-58d3-4b89-828b-33189d46e0f3",
+                  "trace_id": "6bf38432-4a18-415b-b051-5ea6195f2fd5",
+                  "task_id": "b193e720-8579-4937-83d3-58993eb3962e",
+                  "client_request_id": "macflow-node-1",
+                  "status": "queued",
+                  "model": "bridge-image",
+                  "media_kind": "image",
+                  "target": {
+                    "profileInstanceId": "2671ef2a-a9a1-4687-a7a4-aebbd22afd43",
+                    "tabId": 42,
+                    "documentToken": "82d07aa6-44fd-49d7-ab08-c1a95a8d54eb",
+                    "url": "https://chatgpt.com/c/example"
+                  },
+                  "created_at": "2026-11-18T04:20:00Z",
+                  "updated_at": "2026-11-18T04:20:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "422": {
+            "$ref": "#/components/responses/Http422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "502": {
+            "$ref": "#/components/responses/Http502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          },
+          "504": {
+            "$ref": "#/components/responses/Http504"
+          },
+          "507": {
+            "$ref": "#/components/responses/Http507"
+          }
+        }
+      }
+    },
+    "/v1/videos/{task_id}": {
+      "get": {
+        "summary": "Tra cứu tác vụ",
+        "x-scope": "read",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Trạng thái bền vững.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                },
+                "example": {
+                  "request_id": "c0c00745-58d3-4b89-828b-33189d46e0f3",
+                  "trace_id": "6bf38432-4a18-415b-b051-5ea6195f2fd5",
+                  "task_id": "b193e720-8579-4937-83d3-58993eb3962e",
+                  "client_request_id": "macflow-node-1",
+                  "status": "completed",
+                  "model": "bridge-image",
+                  "media_kind": "image",
+                  "target": {
+                    "profileInstanceId": "2671ef2a-a9a1-4687-a7a4-aebbd22afd43",
+                    "tabId": 42,
+                    "documentToken": "82d07aa6-44fd-49d7-ab08-c1a95a8d54eb",
+                    "url": "https://chatgpt.com/c/example"
+                  },
+                  "created_at": "2026-11-18T04:20:00Z",
+                  "updated_at": "2026-11-18T04:20:00Z",
+                  "media": [
+                    {
+                      "id": "77e67229-5bfe-4159-80cf-05ecd2d103bb",
+                      "kind": "image",
+                      "mime_type": "image/png",
+                      "size": 123456,
+                      "sha256": "49bc6d3e13ba7133d5c08fde06c28d342646bc5408fb628c0ed60892cfa778bb"
+                    }
+                  ],
+                  "content": ""
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404TaskLookup"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "422": {
+            "$ref": "#/components/responses/Http422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "502": {
+            "$ref": "#/components/responses/Http502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          },
+          "504": {
+            "$ref": "#/components/responses/Http504"
+          },
+          "507": {
+            "$ref": "#/components/responses/Http507"
+          }
+        }
+      }
+    },
+    "/v1/input-images": {
+      "post": {
+        "summary": "Tải bytes ảnh tham chiếu, tối đa 5 MiB",
+        "x-scope": "upload",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/jpeg": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/webp": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Xác minh và lưu ảnh.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "mime_type": {
+                      "type": "string",
+                      "enum": [
+                        "image/png",
+                        "image/jpeg",
+                        "image/webp",
+                        "video/mp4",
+                        "video/webm"
+                      ]
+                    },
+                    "size": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 16777216
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "mime_type",
+                    "size",
+                    "sha256"
+                  ]
+                },
+                "example": {
+                  "id": "77e67229-5bfe-4159-80cf-05ecd2d103bb",
+                  "mime_type": "image/png",
+                  "size": 123456,
+                  "sha256": "49bc6d3e13ba7133d5c08fde06c28d342646bc5408fb628c0ed60892cfa778bb"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "422": {
+            "$ref": "#/components/responses/Http422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "502": {
+            "$ref": "#/components/responses/Http502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          },
+          "504": {
+            "$ref": "#/components/responses/Http504"
+          },
+          "507": {
+            "$ref": "#/components/responses/Http507"
+          }
+        }
+      }
+    },
+    "/v1/media/{id}": {
+      "get": {
+        "summary": "Tải tệp nhị phân có xác thực",
+        "x-scope": "download",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bytes đã xác minh của media.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "private, no-store"
+                }
+              }
+            },
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "video/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "video/webm": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "422": {
+            "$ref": "#/components/responses/Http422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "502": {
+            "$ref": "#/components/responses/Http502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          },
+          "504": {
+            "$ref": "#/components/responses/Http504"
+          },
+          "507": {
+            "$ref": "#/components/responses/Http507"
+          }
+        }
+      }
+    },
+    "/v1/media/tasks": {
+      "post": {
+        "summary": "Tạo tác vụ bất đồng bộ",
+        "x-scope": "generate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "$ref": "#/components/schemas/Target"
+                  },
+                  "media_kind": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "auto",
+                      "image",
+                      "video"
+                    ]
+                  },
+                  "stream": {
+                    "type": "boolean"
+                  },
+                  "input_images": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "maxItems": 4
+                  },
+                  "messages": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "role": {
+                          "type": "string"
+                        },
+                        "content": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "content"
+                      ]
+                    }
+                  },
+                  "client_request_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "required": [
+                  "model",
+                  "messages"
+                ]
+              },
+              "example": {
+                "client_request_id": "macflow-node-1",
+                "model": "bridge-image",
+                "target": {
+                  "profileInstanceId": "2671ef2a-a9a1-4687-a7a4-aebbd22afd43",
+                  "tabId": 42,
+                  "documentToken": "82d07aa6-44fd-49d7-ab08-c1a95a8d54eb",
+                  "url": "https://chatgpt.com/c/example"
+                },
+                "media_kind": "image",
+                "stream": false,
+                "messages": [
+                  {
+                    "role": "user",
+                    "content": "Tạo ảnh phong cảnh."
+                  }
+                ],
+                "input_images": []
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Dùng header này hoặc client_request_id trong JSON. Gửi lại đúng payload với cùng khóa.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tác vụ đã có cùng khóa.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                },
+                "example": {
+                  "request_id": "c0c00745-58d3-4b89-828b-33189d46e0f3",
+                  "trace_id": "6bf38432-4a18-415b-b051-5ea6195f2fd5",
+                  "task_id": "b193e720-8579-4937-83d3-58993eb3962e",
+                  "client_request_id": "macflow-node-1",
+                  "status": "queued",
+                  "model": "bridge-image",
+                  "media_kind": "image",
+                  "target": {
+                    "profileInstanceId": "2671ef2a-a9a1-4687-a7a4-aebbd22afd43",
+                    "tabId": 42,
+                    "documentToken": "82d07aa6-44fd-49d7-ab08-c1a95a8d54eb",
+                    "url": "https://chatgpt.com/c/example"
+                  },
+                  "created_at": "2026-11-18T04:20:00Z",
+                  "updated_at": "2026-11-18T04:20:00Z"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Đã nhận tác vụ lần đầu.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                },
+                "example": {
+                  "request_id": "c0c00745-58d3-4b89-828b-33189d46e0f3",
+                  "trace_id": "6bf38432-4a18-415b-b051-5ea6195f2fd5",
+                  "task_id": "b193e720-8579-4937-83d3-58993eb3962e",
+                  "client_request_id": "macflow-node-1",
+                  "status": "queued",
+                  "model": "bridge-image",
+                  "media_kind": "image",
+                  "target": {
+                    "profileInstanceId": "2671ef2a-a9a1-4687-a7a4-aebbd22afd43",
+                    "tabId": 42,
+                    "documentToken": "82d07aa6-44fd-49d7-ab08-c1a95a8d54eb",
+                    "url": "https://chatgpt.com/c/example"
+                  },
+                  "created_at": "2026-11-18T04:20:00Z",
+                  "updated_at": "2026-11-18T04:20:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "422": {
+            "$ref": "#/components/responses/Http422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "502": {
+            "$ref": "#/components/responses/Http502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          },
+          "504": {
+            "$ref": "#/components/responses/Http504"
+          },
+          "507": {
+            "$ref": "#/components/responses/Http507"
+          }
+        }
+      }
+    },
+    "/v1/media/tasks/{task_id}": {
+      "get": {
+        "summary": "Tra cứu tác vụ",
+        "x-scope": "read",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Trạng thái bền vững.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                },
+                "example": {
+                  "request_id": "c0c00745-58d3-4b89-828b-33189d46e0f3",
+                  "trace_id": "6bf38432-4a18-415b-b051-5ea6195f2fd5",
+                  "task_id": "b193e720-8579-4937-83d3-58993eb3962e",
+                  "client_request_id": "macflow-node-1",
+                  "status": "completed",
+                  "model": "bridge-image",
+                  "media_kind": "image",
+                  "target": {
+                    "profileInstanceId": "2671ef2a-a9a1-4687-a7a4-aebbd22afd43",
+                    "tabId": 42,
+                    "documentToken": "82d07aa6-44fd-49d7-ab08-c1a95a8d54eb",
+                    "url": "https://chatgpt.com/c/example"
+                  },
+                  "created_at": "2026-11-18T04:20:00Z",
+                  "updated_at": "2026-11-18T04:20:00Z",
+                  "media": [
+                    {
+                      "id": "77e67229-5bfe-4159-80cf-05ecd2d103bb",
+                      "kind": "image",
+                      "mime_type": "image/png",
+                      "size": 123456,
+                      "sha256": "49bc6d3e13ba7133d5c08fde06c28d342646bc5408fb628c0ed60892cfa778bb"
+                    }
+                  ],
+                  "content": ""
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404TaskLookup"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "422": {
+            "$ref": "#/components/responses/Http422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "502": {
+            "$ref": "#/components/responses/Http502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          },
+          "504": {
+            "$ref": "#/components/responses/Http504"
+          },
+          "507": {
+            "$ref": "#/components/responses/Http507"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Hủy tác vụ chưa chuyển tới tiện ích",
+        "x-scope": "generate",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Đã hủy tác vụ chờ.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Trace-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "X-Task-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                },
+                "example": {
+                  "request_id": "c0c00745-58d3-4b89-828b-33189d46e0f3",
+                  "trace_id": "6bf38432-4a18-415b-b051-5ea6195f2fd5",
+                  "task_id": "b193e720-8579-4937-83d3-58993eb3962e",
+                  "client_request_id": "macflow-node-1",
+                  "status": "cancelled",
+                  "model": "bridge-image",
+                  "media_kind": "image",
+                  "target": {
+                    "profileInstanceId": "2671ef2a-a9a1-4687-a7a4-aebbd22afd43",
+                    "tabId": 42,
+                    "documentToken": "82d07aa6-44fd-49d7-ab08-c1a95a8d54eb",
+                    "url": "https://chatgpt.com/c/example"
+                  },
+                  "created_at": "2026-11-18T04:20:00Z",
+                  "updated_at": "2026-11-18T04:20:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "422": {
+            "$ref": "#/components/responses/Http422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "502": {
+            "$ref": "#/components/responses/Http502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          },
+          "504": {
+            "$ref": "#/components/responses/Http504"
+          },
+          "507": {
+            "$ref": "#/components/responses/Http507"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "AppKey": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "Target": {
+        "type": "object",
+        "properties": {
+          "profileInstanceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tabId": {
+            "type": "integer"
+          },
+          "documentToken": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": [
+          "profileInstanceId",
+          "tabId",
+          "documentToken",
+          "url"
+        ]
+      },
+      "Media": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "mime_type": {
+            "type": "string",
+            "enum": [
+              "image/png",
+              "image/jpeg",
+              "image/webp",
+              "video/mp4",
+              "video/webm"
+            ]
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16777216
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "image",
+              "video"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "mime_type",
+          "size",
+          "sha256",
+          "kind"
+        ]
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "trace_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "task_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled",
+              "unknown"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "media_kind": {
+            "type": "string",
+            "enum": [
+              "none",
+              "auto",
+              "image",
+              "video"
+            ]
+          },
+          "target": {
+            "$ref": "#/components/schemas/Target"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "content": {
+            "type": "string"
+          },
+          "media": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Media"
+            }
+          },
+          "error": {
+            "$ref": "#/components/schemas/Failure"
+          }
+        },
+        "required": [
+          "request_id",
+          "trace_id",
+          "task_id",
+          "status",
+          "model",
+          "media_kind",
+          "target"
+        ]
+      },
+      "Failure": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "layer": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/Failure"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      }
+    },
+    "responses": {
+      "Http401": {
+        "description": "UNAUTHORIZED",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Trace-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Task-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "UNAUTHORIZED",
+                "message": "Kiểm tra mã lỗi và ID truy vết."
+              }
+            }
+          }
+        }
+      },
+      "Http403": {
+        "description": "INSUFFICIENT_SCOPE",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Trace-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Task-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "INSUFFICIENT_SCOPE",
+                "message": "Kiểm tra mã lỗi và ID truy vết."
+              }
+            }
+          }
+        }
+      },
+      "Http404": {
+        "description": "NOT_FOUND",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Trace-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Task-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "NOT_FOUND",
+                "message": "Kiểm tra mã lỗi và ID truy vết."
+              }
+            }
+          }
+        }
+      },
+      "Http409": {
+        "description": "TAB_STALE",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Trace-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Task-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "TAB_STALE",
+                "message": "Kiểm tra mã lỗi và ID truy vết."
+              }
+            }
+          }
+        }
+      },
+      "Http413": {
+        "description": "REQUEST_TOO_LARGE",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Trace-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Task-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "REQUEST_TOO_LARGE",
+                "message": "Kiểm tra mã lỗi và ID truy vết."
+              }
+            }
+          }
+        }
+      },
+      "Http422": {
+        "description": "INVALID_REQUEST",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Trace-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Task-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "INVALID_REQUEST",
+                "message": "Kiểm tra mã lỗi và ID truy vết."
+              }
+            }
+          }
+        }
+      },
+      "Http429": {
+        "description": "QUEUE_FULL",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Trace-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Task-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "QUEUE_FULL",
+                "message": "Kiểm tra mã lỗi và ID truy vết."
+              }
+            }
+          }
+        }
+      },
+      "Http500": {
+        "description": "INTERNAL_ERROR",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Trace-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Task-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "Kiểm tra mã lỗi và ID truy vết."
+              }
+            }
+          }
+        }
+      },
+      "Http502": {
+        "description": "MEDIA_INVALID",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Trace-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Task-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "MEDIA_INVALID",
+                "message": "Kiểm tra mã lỗi và ID truy vết."
+              }
+            }
+          }
+        }
+      },
+      "Http503": {
+        "description": "EXTENSION_OFFLINE",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Trace-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Task-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "EXTENSION_OFFLINE",
+                "message": "Kiểm tra mã lỗi và ID truy vết."
+              }
+            }
+          }
+        }
+      },
+      "Http504": {
+        "description": "TASK_UNKNOWN",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Trace-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Task-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "TASK_UNKNOWN",
+                "message": "Kiểm tra mã lỗi và ID truy vết."
+              }
+            }
+          }
+        }
+      },
+      "Http507": {
+        "description": "STORAGE_QUOTA",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Trace-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Task-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "STORAGE_QUOTA",
+                "message": "Kiểm tra mã lỗi và ID truy vết."
+              }
+            }
+          }
+        }
+      },
+      "Http404TaskLookup": {
+        "description": "UUID chưa ghi nhận hoặc không thuộc API key.",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Trace-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "X-Task-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "unknown"
+                  ]
+                },
+                "error": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

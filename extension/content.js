@@ -1,5 +1,6 @@
 const PROVIDER = detectProvider(location.hostname);
 let runningRequest = null;
+let uncertainDocument = false;
 
 const PROVIDER_DISPLAY_NAMES = {
   grok: "Grok",
@@ -54,17 +55,123 @@ const SITE_CONFIG = {
 };
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== "bridge:run") return;
-  if (runningRequest) {
-    report({ type: "bridge:error", id: message.id, message: "This AI chat tab is already processing another bridge request." });
-    sendResponse({ ok: false });
+  if (message?.type === "bridge:probe") {
+    sendResponse(pageState());
     return;
   }
-  runRequest(message).catch((error) => report({ type: "bridge:error", id: message.id, message: error.message }));
+  if (message?.type !== "bridge:run") return;
+  if (documentBusy()) {
+    if (!message.target) report({ type: "bridge:error", id: message.id, message: "This AI chat tab is busy." });
+    sendResponse({ ok: false, code: "TAB_BUSY" });
+    return;
+  }
+  if (message.target) {
+    if (message.provider !== PROVIDER || message.target.url !== pageUrl()) {
+      sendResponse({ ok: false, code: "TAB_STALE" });
+      return;
+    }
+    runPinnedRequest(message);
+  } else {
+    runRequest(message).catch((error) => report({ type: "bridge:error", id: message.id, message: error.message }));
+  }
   sendResponse({ ok: true });
 });
 
-report({ type: "bridge:status", status: "ready", provider: PROVIDER, url: location.href });
+report({ type: "bridge:status" });
+
+function documentBusy() {
+  return Boolean(runningRequest || uncertainDocument || isGenerating());
+}
+
+function pageState() {
+  const composer = PROVIDER && findVisible(SITE_CONFIG[PROVIDER].input);
+  const adapter = mediaAdapter(PROVIDER, composer);
+  const outputKinds = !composer ? [] : adapter?.kind === "video" ? ["video"] : ["text", ...(adapter?.kind ? [adapter.kind] : [])];
+  return {
+    url: pageUrl(),
+    ready: Boolean(composer),
+    busy: documentBusy(),
+    outputKinds,
+    input_image_support: Boolean(adapter?.attach),
+  };
+}
+
+async function runPinnedRequest({ id, target, prompt, media_kind: kind, input_images: images }) {
+  runningRequest = id;
+  let clicked = false;
+  const reportPinned = (message) => chrome.runtime.sendMessage({
+    type: "bridge:site-message", message: { ...message, id },
+  });
+  const emit = async (message) => {
+    const reply = await reportPinned(message).catch(() => null);
+    if (!reply?.ok) throw bridgeSiteError("TASK_UNKNOWN", clicked ? "unknown" : "before_submit");
+  };
+  try {
+    const config = SITE_CONFIG[PROVIDER];
+    const composer = findVisible(config.input);
+    const adapter = mediaAdapter(PROVIDER, composer);
+    if (!composer || (kind === "image" || kind === "video") && adapter?.kind !== kind
+      || kind === "none" && adapter?.kind === "video") throw bridgeSiteError("TAB_UNSUPPORTED");
+    if (images.length && !adapter?.attach) throw bridgeSiteError("INPUT_IMAGE_INVALID");
+    const assertPage = () => {
+      if (target.url !== pageUrl() || !composer.isConnected) throw bridgeSiteError("TAB_STALE");
+      if (isGenerating()) throw bridgeSiteError("TAB_BUSY");
+    };
+    const assertRoute = () => {
+      if (adapter ? !adapter.route(target.url, pageUrl()) : target.url !== pageUrl()) throw bridgeSiteError("TASK_UNKNOWN", "unknown");
+    };
+    const text = resolvePromptModelName(prompt);
+    assertPage();
+    if ((composer.value ?? composer.innerText).trim()) throw bridgeSiteError("TAB_BUSY");
+    const names = await attachImages(images, adapter?.attach, composer, assertPage);
+    assertPage();
+    setComposerText(composer, text);
+    await delay(120);
+    const capture = adapter?.capture(text);
+    const previousText = capture ? null : latestResponseText(config);
+    const button = adapter ? adapter.button : findSendButton;
+    const verifyBeforeSend = () => {
+      assertPage();
+      if (!uploadedImagesVisible(composer, names)) throw bridgeSiteError("INPUT_IMAGE_INVALID");
+      const control = button();
+      if (!control || !isVisible(control) || control.disabled || control.getAttribute("aria-disabled") === "true") {
+        throw bridgeSiteError("PROMPT_CONTROL_UNAVAILABLE");
+      }
+      const draft = composer.value ?? composer.innerText;
+      if (draft.replace(/\s+/g, " ").trim() !== text.replace(/\s+/g, " ").trim()) throw bridgeSiteError("TAB_BUSY");
+      return control;
+    };
+    verifyBeforeSend();
+    await emit({ type: "bridge:submitted", input_images: images.map(({ id, sha256 }) => ({ id, sha256 })) });
+    const control = verifyBeforeSend();
+    clicked = true;
+    control.click();
+    let accepted = false;
+    const observeSubmission = async () => {
+      if (accepted) return;
+      accepted = true;
+      await emit({ type: "bridge:prompt-sent" });
+    };
+    const captureKind = kind === "auto" && !adapter?.kind ? "none" : kind;
+    const result = capture
+      ? await waitForArtifact(capture, captureKind, assertRoute, 28 * 60_000, kind === "none" || kind === "auto", adapter.kind === "video", observeSubmission)
+      : { files: [], text: await streamLatestResponse(id, config, previousText, { assertRoute, observeSubmission }) };
+    await emit({ type: "bridge:website-completed" });
+    const media = await streamMedia(result.files, assertRoute, emit);
+    assertRoute();
+    await emit({ type: "bridge:complete", text: result.text, media });
+  } catch (error) {
+    const phase = error.phase ?? (clicked ? "unknown" : "before_submit");
+    if (clicked && phase === "unknown") uncertainDocument = true;
+    if (clicked && phase === "finished") await reportPinned({ type: "bridge:website-completed" }).catch(() => {});
+    await reportPinned({
+      type: "bridge:error", code: error.code ?? (clicked ? "TASK_UNKNOWN" : "TAB_UNSUPPORTED"), phase,
+    }).catch(() => {});
+  } finally {
+    runningRequest = null;
+    report({ type: "bridge:status" });
+  }
+}
 
 async function runRequest({ id, prompt }) {
   if (!PROVIDER) throw new Error("This page is not a supported AI chat site.");
@@ -111,18 +218,22 @@ function setComposerText(element, text) {
   element.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-function clickSendButton() {
+function findSendButton() {
   const candidates = document.querySelectorAll([
     "button[aria-label*='Send' i]", "button[aria-label*='Submit' i]", "button[aria-label*='发送']",
     "button[data-testid*='send' i]", "button[class*='send' i]",
   ].join(","));
-  const button = [...candidates].find((item) => isVisible(item) && !item.disabled && item.getAttribute("aria-disabled") !== "true");
+  return [...candidates].find((item) => isVisible(item) && !item.disabled && item.getAttribute("aria-disabled") !== "true");
+}
+
+function clickSendButton() {
+  const button = findSendButton();
   if (!button) return false;
   button.click();
   return true;
 }
 
-async function streamLatestResponse(id, config, beforeText) {
+async function streamLatestResponse(id, config, beforeText, pinned) {
   let lastText = beforeText;
   let sawResponse = false;
   let sawGenerating = false;
@@ -131,18 +242,21 @@ async function streamLatestResponse(id, config, beforeText) {
 
   while (Date.now() - startedAt < 230_000) {
     await delay(350);
+    pinned?.assertRoute();
     const generating = isGenerating();
     sawGenerating ||= generating;
     const current = latestResponseText(config);
+    if (pinned && (generating || current && current !== beforeText)) await pinned.observeSubmission();
     if (current && current !== beforeText) {
       sawResponse = true;
       const delta = current.startsWith(lastText) ? current.slice(lastText.length) : current;
-      if (delta && !config.streamFinalOnly) report({ type: "bridge:chunk", id, text: delta });
+      if (!pinned && delta && !config.streamFinalOnly) report({ type: "bridge:chunk", id, text: delta });
       if (current !== lastText) lastChangeAt = Date.now();
       lastText = current;
     }
     const quietFor = Date.now() - lastChangeAt;
     if (sawResponse && ((!generating && sawGenerating && quietFor > 800) || (!sawGenerating && quietFor > 3500))) {
+      if (pinned) return lastText;
       if (config.streamFinalOnly && lastText) report({ type: "bridge:chunk", id, text: lastText });
       report({ type: "bridge:complete", id, text: lastText });
       return;

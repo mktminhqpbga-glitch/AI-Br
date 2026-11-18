@@ -1,0 +1,7 @@
+.git
+node_modules
+.env*
+.ai-bridge-token
+.ai-bridge-data
+test
+integration

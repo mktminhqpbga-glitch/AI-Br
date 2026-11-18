@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: ai-bridge-cloud
+    runtime: docker
+    plan: starter
+    numInstances: 1
+    autoDeployTrigger: "off"
+    healthCheckPath: /health
+    disk:
+      name: ai-bridge-state
+      mountPath: /var/data/ai-bridge
+      sizeGB: 10
+    envVars:
+      - key: BRIDGE_MODE
+        value: cloud
+      - key: BRIDGE_DATA_DIR
+        value: /var/data/ai-bridge
+      - key: BRIDGE_PUBLIC_URL
+        sync: false
+      - key: BRIDGE_ADMIN_PASSWORD
+        sync: false
+      - key: BRIDGE_S3_ENDPOINT
+        sync: false
+      - key: BRIDGE_S3_REGION
+        sync: false
+      - key: BRIDGE_S3_BUCKET
+        sync: false
+      - key: BRIDGE_S3_ACCESS_KEY_ID
+        sync: false
+      - key: BRIDGE_S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: BRIDGE_MEDIA_QUOTA_BYTES
+        value: "2147483648"
+      - key: BRIDGE_MEDIA_RETENTION_HOURS
+        value: "168"

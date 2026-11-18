@@ -5,7 +5,7 @@ This repository is based on [RenZekta/AI-Bridge](https://github.com/RenZekta/AI-
 AI Bridge turns a tab you are already logged into on an AI chat website into a **local, OpenAI-compatible** endpoint for a local IDE or agent. It deliberately keeps the two halves on your computer:
 
 ```text
-IDE / agent ──HTTP──> 127.0.0.1:4317/v1 ──WebSocket──> Chrome extension ──DOM──> logged-in AI chat tab
+IDE / agent ──HTTP──> 127.0.0.1:4319/v1 ──WebSocket──> Chrome extension ──DOM──> logged-in AI chat tab
 ```
 
 ## Supported AI chats
@@ -31,10 +31,10 @@ This project borrows the practical idea of a web-chat-to-OpenAI gateway from [ge
    npm start
    ```
 
-   On first start it creates `.ai-bridge-token` next to `local-server.mjs`, then prints that bridge token. Leave this terminal running. Future starts reuse the same token, so the extension does not need to be configured again.
+   On first start it creates `.ai-bridge-token` next to `local-server.mjs`, and prints the token file path. Leave this terminal running. Future starts reuse the same token, so the extension does not need to be configured again.
 
 3. In Chrome, open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked**, and select the `extension` folder in this project.
-4. Open the AI Bridge extension, paste the printed token, and click **Save & connect**.
+4. Open the AI Bridge extension, paste the value from the local token file, and click **Save & connect**.
 5. Click a provider in the popup, sign in normally, and leave that tab open. Choose it as the default provider, or use a provider-specific model name.
 
 The server binds only to `127.0.0.1`. It never reads, copies, or uploads Chrome profile files. Each request is serialised because a chat tab can answer only one prompt at a time. While connected, the extension exchanges a heartbeat every 20 seconds, so its Manifest V3 service worker remains active indefinitely on Chrome 116 or newer. The **Pause** button intentionally stops that connection; **Continue** restores it.
@@ -46,7 +46,7 @@ After changing extension files during development, click the extension's **Reloa
 Set the IDE's OpenAI-compatible base URL to:
 
 ```text
-http://127.0.0.1:4317/v1
+http://127.0.0.1:4319/v1
 ```
 
 Use `bridge-auto` to route to the configured default provider, or select one explicitly:
@@ -62,12 +62,12 @@ The local endpoint implements `GET /v1/models`, `POST /v1/chat/completions`, inc
 Automatic “name this conversation” requests are detected and completed locally; they do not use the active AI-chat tab. Set `BRIDGE_INTERCEPT_TITLES=0` before starting the server to disable this behavior.
 
 ```powershell
-curl http://127.0.0.1:4317/v1/chat/completions `
+curl http://127.0.0.1:4319/v1/chat/completions `
   -H 'Content-Type: application/json' `
   -d '{"model":"bridge-gemini","messages":[{"role":"user","content":"Explain this error briefly."}]}'
 ```
 
-Most OpenAI clients require a non-empty API key even when a local server does not. Supply any placeholder value unless you opt into local API-key protection:
+Set an API key to enable model discovery and the MacFlow status and media APIs. An unpinned text-only chat request can run without a key when the server has no key configured:
 
 ```powershell
 $env:BRIDGE_API_KEY = 'choose-a-local-secret'
@@ -78,7 +78,7 @@ With `BRIDGE_API_KEY` set, send `Authorization: Bearer choose-a-local-secret`.
 
 ### Bridge-token storage
 
-The bridge token is automatically stored in the ignored `.ai-bridge-token` file. Delete that file to rotate the token, then paste the newly printed value into the extension. To use a managed token without writing a file, set `BRIDGE_TOKEN`; to choose another token-file location, pass `--token-file <path>` or set `BRIDGE_TOKEN_FILE`.
+The bridge token is automatically stored in the ignored `.ai-bridge-token` file. Delete that file to rotate the token, then paste the new file's value into the extension. To use a managed token without writing a file, set `BRIDGE_TOKEN`; to choose another token-file location, pass `--token-file <path>` or set `BRIDGE_TOKEN_FILE`.
 
 ### Settings
 
@@ -120,21 +120,29 @@ prompt-instructions/
 - Edit the markdown files anytime; the next request reloads them. Settings changes still require restarting `npm start`.
 - Use `BRIDGE_PROMPT_INSTRUCTIONS_DIR` or `--prompt-instructions-dir <path>` to point at another instructions root.
 
+## Cloud Control Center on Render
+
+Cloud mode runs the gateway, Vietnamese dashboard and durable task tracking on Render. The user's existing Chrome connects out over WSS after one-time pairing. See the [Render deployment and cloud API guide](docs/cloud-render.md) and [OpenAPI contract](cloud-ui/openapi.json).
+
+## MacFlow and Toonflow media API
+
+AI-Br 0.6 adds authenticated tab discovery, reference-image upload, pinned generation, resumable task status and verified media downloads. The media workflow requires FFmpeg and ffprobe. The default listeners share state on ports 4319 and 4317. See the [MacFlow API contract](docs/macflow-api.md) for setup, capability detection, examples and recovery behavior.
+
 ## Notes and limits
 
 - This uses the visible web UI, not a provider's private or undocumented network API. UI changes can require selector updates in `extension/content.js`.
 - You are responsible for the terms, plan limits, and acceptable-use rules of every provider you choose to connect.
-- File uploads, images, provider-specific citations, and native tool execution are outside the first version. When the IDE sends a `tools` array, the bridge best-effort detects JSON tool-call text from the chat tab (bare, fenced, or prose-wrapped) and returns OpenAI `tool_calls` for both streaming and non-streaming requests.
+- Pinned media requests support reference images and output files for supported tab modes. Inline image parts in regular text chat, provider-specific citations, and native tool execution are outside the API contract. When the IDE sends a `tools` array, the bridge best-effort detects JSON tool-call text from the chat tab (bare, fenced, or prose-wrapped) and returns OpenAI `tool_calls` for both streaming and non-streaming requests.
 - Claude responses are intentionally emitted once its final response block is stable, rather than streaming its intermediate thinking/status blocks into the IDE.
 - Keep the requested provider page fully loaded. If a request says the content script is not ready, reload that tab.
 - The extension has permissions only for the nine named chat websites and localhost; it does not have broad `<all_urls>` access.
 
 ## Development
 
-Use Node.js 22.4 or newer to run the test suite with Node's built-in WebSocket client. The project has no npm dependencies to install.
+Use Node.js 22.4 or newer with FFmpeg and ffprobe to run the test suite. Run `npm ci` before running the tests. The local gateway uses Node.js built-ins; cloud mode adds the S3 client.
 
 ```sh
 npm test
 ```
 
-The tests cover the local health endpoint, model list, title-request interception, bridge relay, streaming, heartbeats, token persistence, prompt-instruction injection, and text-to-`tool_calls` conversion.
+The suite covers chat and tool calls, tab routing, reference uploads, image and video decoding, authenticated downloads and task recovery. Run `npm run test:browser` for DOM and adapter tests with isolated Chromium fixtures.

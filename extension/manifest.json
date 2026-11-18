@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "AI Bridge",
-  "version": "0.4.0",
+  "version": "0.7.0",
   "minimum_chrome_version": "116",
   "description": "Makes logged-in AI chat tabs available through a local OpenAI-compatible endpoint.",
-  "permissions": ["storage", "tabs"],
+  "permissions": ["storage", "tabs", "webNavigation"],
+  "optional_host_permissions": ["https://*/*"],
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",
@@ -41,7 +42,7 @@
         "https://chat.z.ai/*",
         "https://www.kimi.com/*"
       ],
-      "js": ["content.js"],
+      "js": ["media-adapters.js", "content.js"],
       "run_at": "document_idle"
     }
   ]

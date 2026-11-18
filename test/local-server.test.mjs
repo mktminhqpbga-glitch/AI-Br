@@ -36,21 +36,22 @@ test("serves the local OpenAI discovery and unavailable-bridge contracts", async
     "--token=test-token",
     `--settings-file=${settingsFile}`,
     `--prompt-instructions-dir=${promptRoot}`,
-  ], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
+  ], { cwd: process.cwd(), env: { ...process.env, BRIDGE_API_KEY: "test-api-key" }, stdio: ["ignore", "pipe", "pipe"] });
   context.after(() => child.kill());
   await once(child.stdout, "data");
+  const auth = { Authorization: "Bearer test-api-key" };
 
   const health = await fetch(`http://127.0.0.1:${port}/health`);
   assert.equal(health.status, 200);
   assert.equal((await health.json()).ok, true);
 
-  const models = await fetch(`http://127.0.0.1:${port}/v1/models`);
+  const models = await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: auth });
   assert.equal(models.status, 200);
   assert.ok((await models.json()).data.some((model) => model.id === "bridge-chatgpt"));
 
   const completion = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { ...auth, "content-type": "application/json" },
     body: JSON.stringify({ model: "bridge-gemini", messages: [{ role: "user", content: "hello" }] }),
   });
   assert.equal(completion.status, 503);
@@ -58,7 +59,7 @@ test("serves the local OpenAI discovery and unavailable-bridge contracts", async
 
   const title = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { ...auth, "content-type": "application/json" },
     body: JSON.stringify({
       model: "bridge-gemini",
       messages: [
@@ -72,7 +73,7 @@ test("serves the local OpenAI discovery and unavailable-bridge contracts", async
 
   const streamedTitle = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { ...auth, "content-type": "application/json" },
     body: JSON.stringify({
       model: "bridge-gemini",
       stream: true,
@@ -109,7 +110,7 @@ test("serves the local OpenAI discovery and unavailable-bridge contracts", async
 
   const bridged = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { ...auth, "content-type": "application/json" },
     body: JSON.stringify({ model: "bridge-gemini", messages: [{ role: "user", content: "hello" }] }),
   });
   assert.equal(bridged.status, 200);
@@ -117,7 +118,7 @@ test("serves the local OpenAI discovery and unavailable-bridge contracts", async
 
   const streamed = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { ...auth, "content-type": "application/json" },
     body: JSON.stringify({ model: "bridge-gemini", stream: true, messages: [{ role: "user", content: "stream" }] }),
   });
   assert.equal(streamed.status, 200);
@@ -278,13 +279,14 @@ test("persists a generated bridge token unless one is supplied", async (context)
   context.after(async () => fs.rm(folder, { recursive: true, force: true }));
 
   const first = await startServerWithTokenFile(tokenFile);
-  const firstToken = await first.token;
+  const firstToken = (await fs.readFile(tokenFile, "utf8")).trim();
+  assert.match(firstToken, /^[\w-]{32}$/);
   first.child.kill();
   await once(first.child, "exit");
-  assert.equal((await fs.readFile(tokenFile, "utf8")).trim(), firstToken);
+  assert.ok(!first.output().includes(firstToken));
 
   const second = await startServerWithTokenFile(tokenFile);
-  const secondToken = await second.token;
+  const secondToken = (await fs.readFile(tokenFile, "utf8")).trim();
   second.child.kill();
   await once(second.child, "exit");
   assert.equal(secondToken, firstToken);
@@ -293,15 +295,14 @@ test("persists a generated bridge token unless one is supplied", async (context)
 async function startServerWithTokenFile(tokenFile) {
   const port = await freePort();
   const child = spawn(process.execPath, ["local-server.mjs", `--port=${port}`, "--token-file", tokenFile], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
-  const token = new Promise((resolve, reject) => {
-    let output = "";
+  let output = "";
+  await new Promise((resolve, reject) => {
     child.stdout.on("data", (chunk) => {
       output += chunk;
-      const match = output.match(/Bridge token: (.+)/);
-      if (match) resolve(match[1].trim());
+      if (output.includes("Bridge token file:")) resolve();
     });
     child.once("error", reject);
-    child.once("exit", (code) => reject(new Error(`Server stopped before publishing its token (exit ${code}).`)));
+    child.once("exit", (code) => reject(new Error(`Server stopped before listening (exit ${code}).`)));
   });
-  return { child, token };
+  return { child, output: () => output };
 }

@@ -12,6 +12,9 @@ import {
   ensurePromptInstructionsLayout,
 } from "./prompt-instructions.mjs";
 import { makeAssistantMessage } from "./tool-calls.mjs";
+import { createMediaBridge } from "./media-bridge.mjs";
+import { BridgeError, createMediaStore } from "./media-store.mjs";
+import { createCloudControl, errorLayer } from "./cloud-control.mjs";
 
 const MAX_BODY_BYTES = 1_000_000;
 const MAX_QUEUE_LENGTH = 10;
@@ -26,8 +29,10 @@ const DEFAULT_BRIDGE_SETTINGS = Object.freeze({
 });
 
 const args = parseArgs(process.argv.slice(2));
-const port = readPort(args.port ?? process.env.BRIDGE_PORT ?? "4317");
-const tokenConfig = resolveBridgeToken(args);
+const cloudMode = process.env.BRIDGE_MODE === "cloud";
+const configuredPort = args.port ?? (cloudMode ? process.env.PORT : process.env.BRIDGE_PORT);
+const port = readPort(configuredPort ?? (cloudMode ? "10000" : "4319"));
+const tokenConfig = cloudMode ? {} : resolveBridgeToken(args);
 const settingsConfig = loadBridgeSettings(args);
 const promptInstructionsDir = resolvePromptInstructionsDirectory(args, settingsConfig.path);
 const bridgeToken = tokenConfig.token;
@@ -44,31 +49,86 @@ const clients = new Set();
 const jobs = new Map();
 const queue = [];
 let activeJob = null;
+const providerHosts = new Map([
+  ["grok.com", "grok"], ["gemini.google.com", "gemini"], ["chat.deepseek.com", "deepseek"],
+  ["www.perplexity.ai", "perplexity"], ["chat.qwen.ai", "qwen"], ["chat.qwenlm.ai", "qwen"],
+  ["chatgpt.com", "chatgpt"], ["claude.ai", "claude"], ["chat.z.ai", "zai"], ["www.kimi.com", "kimi"],
+]);
+let mediaBridge;
+let cloud;
+let cloudObjects;
+try {
+  if (cloudMode) {
+    const { createCloudObjects } = await import("./cloud-objects.mjs");
+    cloudObjects = createCloudObjects(process.env);
+  }
+} catch {
+  console.error("[ai-bridge] Cloud mode requires a private HTTPS object store configuration.");
+  process.exit(1);
+}
 
-const server = http.createServer(async (request, response) => {
+function configuredInteger(value, fallback, min, max) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) throw new Error("Invalid numeric configuration.");
+  return parsed;
+}
+
+function initializeMediaBridge() {
+  if (cloudMode && !process.env.BRIDGE_DATA_DIR) throw new Error("Configure a persistent data directory.");
+  const root = path.resolve(process.env.BRIDGE_DATA_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), ".ai-bridge-data"));
+  const store = createMediaStore(root, cloudMode ? {
+    objects: cloudObjects,
+    quota: configuredInteger(process.env.BRIDGE_MEDIA_QUOTA_BYTES, 2 * 1024 ** 3, 16 * 1024 ** 2, 100 * 1024 ** 3),
+    ttlMs: configuredInteger(process.env.BRIDGE_MEDIA_RETENTION_HOURS, 168, 1, 720) * 3_600_000,
+  } : {});
+  if (cloudMode) {
+    store.requireValidator();
+    cloud = createCloudControl({
+      root, publicUrl: process.env.BRIDGE_PUBLIC_URL, adminPassword: process.env.BRIDGE_ADMIN_PASSWORD,
+      providerLabels: PROVIDER_DISPLAY_NAMES, sendJson, profileClients: clients, status: () => mediaBridge.snapshot(),
+      tasks: () => mediaBridge.listTasks(), mediaUsage: store.usage,
+    });
+  }
+  return createMediaBridge({
+    store, cloud,
+    clients,
+    providerLabels: PROVIDER_DISPLAY_NAMES,
+    providerForModel,
+    providerForUrl: (url) => providerHosts.get(new URL(url).host),
+    createPrompt,
+    complete: sendCompletion,
+    sendJson,
+    sendError: sendOpenAiError,
+    legacyBusy: () => Boolean(activeJob),
+    legacyQueueLength: () => queue.length,
+    dispatch: dispatchNext,
+  });
+}
+
+async function handleHttp(request, response) {
   try {
-    if (!isLoopback(request.socket.remoteAddress)) {
+    if (!cloudMode && !isLoopback(request.socket.remoteAddress)) {
       return sendOpenAiError(response, 403, "AI Bridge only accepts loopback connections.", "forbidden");
     }
 
-    setCorsHeaders(response);
-    if (request.method === "OPTIONS") {
-      response.writeHead(204).end();
-      return;
-    }
-
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (cloudMode) {
+      if (request.method === "GET" && url.pathname === "/health") return sendJson(response, 200, { ok: true });
+      return await handleCloudHttp(request, response, url);
+    }
+    setCorsHeaders(response);
+    if (request.method === "OPTIONS") return response.writeHead(204).end();
     if (request.method === "GET" && url.pathname === "/health") {
       return sendJson(response, 200, {
         ok: true,
         connected_extensions: clients.size,
-        active_request: activeJob?.id ?? null,
-        queued_requests: queue.length,
+        active_request: mediaBridge.activeId ?? activeJob?.id ?? null,
+        queued_requests: queue.length + mediaBridge.queued,
       });
     }
 
     if (request.method === "GET" && url.pathname === "/v1/models") {
-      if (!isAuthorized(request)) return sendOpenAiError(response, 401, "Invalid API key.", "invalid_api_key");
+      requireApiKey(request);
       return sendJson(response, 200, {
         object: "list",
         data: PROVIDERS.map((provider) => ({
@@ -81,25 +141,116 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
-      if (!isAuthorized(request)) return sendOpenAiError(response, 401, "Invalid API key.", "invalid_api_key");
+      if (apiKey) requireApiKey(request);
       const payload = await readJsonBody(request);
-      return handleChatCompletion(request, response, payload);
+      if (payload && (Object.hasOwn(payload, "target") || Object.hasOwn(payload, "input_images") || Object.hasOwn(payload, "media_kind"))) {
+        requireApiKey(request);
+        return mediaBridge.prepare(payload, response);
+      }
+      return handleChatCompletion(response, payload);
     }
 
+    if (url.pathname === "/api/bridge/status" || url.pathname === "/v1/input-images" || url.pathname.startsWith("/v1/media/")) {
+      requireApiKey(request);
+      return await mediaBridge.route(request, response, url.pathname, readJsonBody, activeJob?.id);
+    }
     return sendOpenAiError(response, 404, "Route not found.", "not_found");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unexpected server error.";
-    if (!response.headersSent) sendOpenAiError(response, 400, message, "invalid_request_error");
+    const failure = error instanceof BridgeError ? error : new BridgeError(500, "INTERNAL_ERROR", "The bridge could not process the request.");
+    if (!response.headersSent) sendOpenAiError(response, failure.status, failure.message, failure.code);
     else response.end();
   }
-});
+}
 
-server.on("upgrade", (request, socket, head) => {
+function publicCloudStatus() {
+  const inventory = mediaBridge.snapshot();
+  const models = cloud.appModels();
+  const tabs = inventory.tabs.map((tab) => {
+    const matching = models.filter((item) => item.provider === tab.provider && (!item.target
+      || ["profileInstanceId", "tabId", "documentToken", "url"].every((key) => item.target[key] === tab[key])));
+    const model_ids = Object.fromEntries(tab.outputKinds.map((kind) => [kind,
+      matching.filter((model) => model.capabilities.outputKinds.includes(kind)).map((model) => model.id),
+    ]));
+    return { ...tab,
+      outputKinds: tab.outputKinds.filter((kind) => model_ids[kind].length),
+      model_ids,
+      input_image_support: tab.input_image_support && matching.some((model) => model.capabilities.input_image_support),
+    };
+  });
+  return { ...inventory, tabs, input_image_support: tabs.some((tab) => tab.ready && tab.input_image_support) };
+}
+
+async function handleCloudHttp(request, response, url) {
+  if (!cloud.allowed(request)) throw new BridgeError(421, "HOST_NOT_ALLOWED", "Use the configured HTTPS gateway.");
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("Referrer-Policy", "no-referrer");
+  response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+  const pathname = url.pathname;
+  if (!pathname.startsWith("/v1/") && pathname !== "/api/bridge/status") return await cloud.route(request, response, url, readJsonBody);
+  if (request.method === "OPTIONS") {
+    cloud.cors(request, response);
+    return response.writeHead(204).end();
+  }
+
+  const requestId = crypto.randomUUID();
+  const traceId = crypto.randomUUID();
+  response.bridgeRequestId = requestId;
+  response.bridgeTraceId = traceId;
+  response.bridgeIdempotency = request.headers["idempotency-key"];
+  response.setHeader("X-Request-Id", requestId);
+  response.setHeader("X-Trace-Id", traceId);
+  const event = (stage, code) => cloud.event(stage, { request: requestId, trace: traceId, code });
+  event("api_received");
+  cloud.cors(request, response);
+  let scope = "read";
+  if (request.method === "DELETE") scope = "generate";
+  if (request.method === "POST") scope = pathname === "/v1/input-images" ? "upload" : "generate";
+  if (request.method === "GET" && /^\/v1\/media\/[^/]+$/.test(pathname) && pathname !== "/v1/media/tasks") scope = "download";
   try {
-    if (!isLoopback(request.socket.remoteAddress)) return rejectUpgrade(socket, 403, "Loopback only");
+    response.bridgeOwner = cloud.authorize(request, scope);
+    event("auth_ok");
+  } catch (error) {
+    event("auth_failed", error.code);
+    throw error;
+  }
+
+  if (request.method === "GET" && pathname === "/v1/models") {
+    const data = cloud.appModels().map(({ provider, target, ...model }) => model);
+    return sendJson(response, 200, { object: "list", data });
+  }
+  if (request.method === "GET" && pathname === "/api/bridge/status") return sendJson(response, 200, publicCloudStatus());
+  if (request.method === "POST" && pathname === "/v1/chat/completions") {
+    response.bridgeFormat = "chat";
+    return mediaBridge.prepare(await readJsonBody(request), response);
+  }
+  if (request.method === "POST" && ["/v1/images/generations", "/v1/videos"].includes(pathname)) {
+    const payload = await readJsonBody(request);
+    if (!payload || typeof payload.prompt !== "string" || !payload.prompt.trim()) throw new BridgeError(422, "INVALID_REQUEST", "A prompt is required.");
+    const image = pathname === "/v1/images/generations";
+    const supported = new Set(["model", "target", "prompt", "input_images", "client_request_id", ...(image ? ["n", "response_format"] : [])]);
+    if (Object.keys(payload).some((key) => !supported.has(key)) || image && (payload.n !== undefined && payload.n !== 1
+      || payload.response_format !== undefined && !["url", "b64_json"].includes(payload.response_format))) {
+      throw new BridgeError(422, "UNSUPPORTED_PARAMETER", "This adapter does not support the requested option.");
+    }
+    if (image && payload.response_format === "b64_json") cloud.authorize(request, "download");
+    response.bridgeFormat = image ? "images" : "tasks";
+    response.bridgeImageEncoding = payload.response_format ?? "url";
+    return mediaBridge.prepare({ ...payload, media_kind: image ? "image" : "video", stream: false,
+      messages: [{ role: "user", content: payload.prompt }] }, response, !image);
+  }
+  if (request.method === "POST" && pathname === "/v1/media/tasks") response.bridgeFormat = "tasks";
+  const route = pathname.startsWith("/v1/videos/") ? pathname.replace("/v1/videos/", "/v1/media/tasks/") : pathname;
+  return await mediaBridge.route(request, response, route, readJsonBody);
+}
+
+function handleUpgrade(request, socket, head) {
+  try {
+    if (!cloudMode && !isLoopback(request.socket.remoteAddress)) return rejectUpgrade(socket, 403, "Loopback only");
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname !== "/bridge") return rejectUpgrade(socket, 404, "Not found");
-    if (url.searchParams.get("token") !== bridgeToken) return rejectUpgrade(socket, 401, "Invalid bridge token");
+    const profile = cloudMode ? cloud.socketProfile(request, url) : null;
+    if (cloudMode ? !profile : url.searchParams.get("token") !== bridgeToken) return rejectUpgrade(socket, 401, "Invalid bridge credential");
     if (request.headers.upgrade?.toLowerCase() !== "websocket") return rejectUpgrade(socket, 400, "WebSocket required");
 
     const key = request.headers["sec-websocket-key"];
@@ -110,38 +261,62 @@ server.on("upgrade", (request, socket, head) => {
       "Upgrade: websocket",
       "Connection: Upgrade",
       `Sec-WebSocket-Accept: ${accept}`,
+      ...(cloudMode ? ["Sec-WebSocket-Protocol: ai-bridge"] : []),
       "",
       "",
     ].join("\r\n"));
 
     const client = createWebSocketClient(socket);
+    client.pairedProfile = profile?.profile;
     clients.add(client);
-    client.send({ type: "bridge:connected", providers: PROVIDERS.slice(1) });
-    if (head.length) client.consume(head);
-    log(`Chrome extension connected (${clients.size} active).`);
     client.onClose = () => {
       clients.delete(client);
       log(`Chrome extension disconnected (${clients.size} active).`);
+      cloud?.chromeEvent(client, "disconnected");
+      mediaBridge.closed(client);
       failJobsForClient(client, "The Chrome extension disconnected while the request was running.");
     };
     client.onMessage = (message) => handleExtensionMessage(client, message);
+    socket.setTimeout(65_000, () => socket.destroy());
+    client.send({ type: "bridge:connected", providers: PROVIDERS.slice(1) });
+    if (head.length) client.consume(head);
+    log(`Chrome extension connected (${clients.size} active).`);
   } catch {
     socket.destroy();
   }
+}
+
+function listen(localPort, onReady) {
+  const server = http.createServer(handleHttp).on("upgrade", handleUpgrade);
+  server.on("error", () => {
+    if (onReady) {
+      log(`Unable to listen on port ${localPort}.`);
+      process.exitCode = 1;
+    } else {
+      log(`Legacy listener unavailable on port ${localPort}.`);
+    }
+  });
+  server.listen(localPort, cloudMode ? "0.0.0.0" : "127.0.0.1", () => {
+    try {
+      onReady?.();
+    } catch {
+      log("Unable to open bridge storage or cloud configuration.");
+      process.exitCode = 1;
+      server.close();
+      return;
+    }
+    log(cloudMode ? `AI Bridge listening on port ${localPort}` : `AI Bridge listening at http://127.0.0.1:${localPort}`);
+    if (onReady && tokenConfig.path) log(`Bridge token file: ${tokenConfig.path}`);
+    if (onReady && !apiKey && !cloudMode) log("Set BRIDGE_API_KEY to enable authenticated models, status and media APIs.");
+  });
+}
+
+listen(port, () => {
+  mediaBridge = initializeMediaBridge();
+  if (!configuredPort && !cloudMode) listen(4317);
 });
 
-server.listen(port, "127.0.0.1", () => {
-  log(`AI Bridge listening at http://127.0.0.1:${port}`);
-  log(`Extension WebSocket: ws://127.0.0.1:${port}/bridge`);
-  log(`Bridge token: ${bridgeToken}`);
-  if (tokenConfig.path) log(`Bridge token file: ${tokenConfig.path}`);
-  log(`Settings file: ${settingsConfig.path}`);
-  log(`Prompt instructions: ${promptInstructionsDir}`);
-  if (!apiKey) log("API key authentication is disabled (loopback-only mode).");
-  else log("API key authentication is enabled.");
-});
-
-function handleChatCompletion(request, response, payload) {
+function handleChatCompletion(response, payload) {
   if (!payload || !Array.isArray(payload.messages) || payload.messages.length === 0) {
     return sendOpenAiError(response, 400, "'messages' must be a non-empty array.", "invalid_request_error", "messages");
   }
@@ -154,24 +329,12 @@ function handleChatCompletion(request, response, payload) {
   if (clients.size === 0) {
     return sendOpenAiError(response, 503, "No Chrome extension is connected. Start the local server, then configure and enable the extension.", "bridge_unavailable");
   }
-  if (queue.length >= MAX_QUEUE_LENGTH) {
+  if (queue.length + mediaBridge.queued >= MAX_QUEUE_LENGTH) {
     return sendOpenAiError(response, 429, "AI Bridge queue is full. Try again shortly.", "rate_limit_error");
   }
 
   const provider = providerForModel(payload.model);
-  const tools = Array.isArray(payload.tools) ? payload.tools : [];
-  const prompt = buildPromptWithInstructions(
-    formatPrompt(payload.messages, tools),
-    payload.messages,
-    provider,
-    {
-      everyMessage: injectPromptInstructionsEveryMessage,
-      prePromptName,
-      postPromptName,
-      rootDirectory: promptInstructionsDir,
-      disguiseModelNameAsAssistant,
-    },
-  );
+  const { prompt, tools } = createPrompt(payload, provider);
   const job = {
     id: `bridge-${crypto.randomUUID()}`,
     model: typeof payload.model === "string" && payload.model ? payload.model : "bridge-auto",
@@ -191,6 +354,23 @@ function handleChatCompletion(request, response, payload) {
   queue.push(job);
   if (job.stream) startStreamingResponse(job);
   dispatchNext();
+}
+
+function createPrompt(payload, provider) {
+  const tools = Array.isArray(payload.tools) ? payload.tools : [];
+  const prompt = buildPromptWithInstructions(
+    formatPrompt(payload.messages, tools),
+    payload.messages,
+    provider,
+    {
+      everyMessage: injectPromptInstructionsEveryMessage,
+      prePromptName,
+      postPromptName,
+      rootDirectory: promptInstructionsDir,
+      disguiseModelNameAsAssistant,
+    },
+  );
+  return { prompt, tools };
 }
 
 function isConversationTitleRequest(messages) {
@@ -253,7 +433,7 @@ const TITLE_STOP_WORDS = new Set([
 ]);
 
 function dispatchNext() {
-  if (activeJob || queue.length === 0) return;
+  if (activeJob || mediaBridge.startNext() || queue.length === 0) return;
   const job = queue.shift();
   const client = selectClient(job.provider);
   if (!client) {
@@ -276,16 +456,31 @@ function dispatchNext() {
 function handleExtensionMessage(client, message) {
   if (!message || typeof message !== "object" || typeof message.type !== "string") return;
   if (message.type === "bridge:hello") {
+    if (cloudMode && (client.mediaProtocol || message.profileInstanceId !== client.pairedProfile || message.mediaProtocol !== 1)) {
+      return client.socket.destroy();
+    }
     client.providers = Array.isArray(message.providers) ? message.providers.filter((name) => PROVIDERS.includes(name)) : [];
-    client.extensionVersion = typeof message.version === "string" ? message.version : "unknown";
+    client.extensionVersion = typeof message.version === "string" && /^\d+\.\d+\.\d+$/.test(message.version) ? message.version : "unknown";
+    mediaBridge.hello(client, message);
+    if (cloudMode && !client.profileInstanceId) return client.socket.destroy();
+    cloud?.chromeEvent(client, "connected");
+    cloud?.config(client);
     return;
   }
-  if (message.type === "bridge:status") return;
+  if (cloudMode && !client.mediaProtocol) return client.socket.destroy();
+  if (message.type === "bridge:status") {
+    const previous = client.tabs;
+    mediaBridge.updateTabs(client, message.tabs);
+    cloud?.chromeEvent(client, "inventory", previous);
+    return;
+  }
   if (message.type === "bridge:ping") {
+    cloud?.chromeEvent(client, "heartbeat");
     client.send({ type: "bridge:pong", at: Date.now() });
     return;
   }
   if (typeof message.id !== "string") return;
+  if (mediaBridge.onMessage(client, message)) return;
   const job = jobs.get(message.id);
   if (!job || job.client !== client || job.done) return;
 
@@ -320,16 +515,26 @@ function finishJob(job) {
   if (job.stream) {
     finishStreamingJob(job);
   } else {
-    const message = makeAssistantMessage(job.text, job.tools);
-    sendJson(job.response, 200, {
-      id: `chatcmpl-${crypto.randomUUID()}`,
-      object: "chat.completion",
-      created: Math.floor(Date.now() / 1000),
-      model: job.model,
-      choices: [{ index: 0, message, finish_reason: message.tool_calls ? "tool_calls" : "stop" }],
-    });
+    sendCompletion(job.response, job.model, job.text, job.tools);
   }
   dispatchNext();
+}
+
+function sendCompletion(response, model, text, tools, media, stream = false) {
+  if (stream) {
+    const job = { response, id: crypto.randomUUID(), model, text, tools, hasTools: tools.length > 0 };
+    startStreamingResponse(job);
+    return finishStreamingJob(job);
+  }
+  const message = media?.length ? { role: "assistant", content: text } : makeAssistantMessage(text, tools);
+  sendJson(response, 200, {
+    id: `chatcmpl-${crypto.randomUUID()}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [{ index: 0, message, finish_reason: message.tool_calls ? "tool_calls" : "stop" }],
+    ...(media ? { media } : {}),
+  });
 }
 
 function finishStreamingJob(job) {
@@ -457,17 +662,18 @@ function readJsonBody(request) {
     request.on("data", (chunk) => {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        request.destroy();
-        reject(new Error(`Request body exceeds ${MAX_BODY_BYTES} bytes.`));
+        chunks.length = 0;
+        reject(new BridgeError(413, "REQUEST_TOO_LARGE", `Request body exceeds ${MAX_BODY_BYTES} bytes.`));
         return;
       }
       chunks.push(chunk);
     });
     request.on("end", () => {
+      if (size > MAX_BODY_BYTES) return;
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"));
       } catch {
-        reject(new Error("Request body must be valid JSON."));
+        reject(new BridgeError(400, "invalid_request_error", "Request body must be valid JSON."));
       }
     });
     request.on("error", reject);
@@ -479,6 +685,8 @@ function createWebSocketClient(socket) {
     socket,
     providers: [],
     buffer: Buffer.alloc(0),
+    fragments: null,
+    fragmentBytes: 0,
     closed: false,
     onClose: null,
     onMessage: null,
@@ -491,8 +699,10 @@ function createWebSocketClient(socket) {
       while (client.buffer.length >= 2) {
         const first = client.buffer[0];
         const second = client.buffer[1];
+        const final = (first & 0x80) !== 0;
         const opcode = first & 0x0f;
         const masked = (second & 0x80) === 0x80;
+        if (!masked || (first & 0x70) !== 0) return closeWebSocket(client, 1002, "Invalid frame");
         let payloadLength = second & 0x7f;
         let offset = 2;
         if (payloadLength === 126) {
@@ -506,6 +716,7 @@ function createWebSocketClient(socket) {
           payloadLength = Number(length);
           offset = 10;
         }
+        if (opcode >= 0x8 && (!final || payloadLength > 125)) return closeWebSocket(client, 1002, "Invalid control frame");
         const frameLength = offset + (masked ? 4 : 0) + payloadLength;
         if (client.buffer.length < frameLength) return;
         let payload = client.buffer.subarray(offset + (masked ? 4 : 0), frameLength);
@@ -520,7 +731,20 @@ function createWebSocketClient(socket) {
           sendWebSocketFrame(socket, payload, 0xA);
           continue;
         }
-        if (opcode !== 0x1) continue;
+        if (opcode === 0xA) continue;
+        if (opcode === 0x1 && !client.fragments && !final) client.fragments = [];
+        else if ((opcode !== 0x1 || client.fragments) && (opcode !== 0x0 || !client.fragments)) {
+          return closeWebSocket(client, 1002, "Unexpected frame");
+        }
+        if (client.fragments) {
+          client.fragmentBytes += payload.length;
+          if (client.fragmentBytes > MAX_BODY_BYTES) return closeWebSocket(client, 1009, "Message too large");
+          client.fragments.push(payload);
+          if (!final) continue;
+          payload = Buffer.concat(client.fragments, client.fragmentBytes);
+          client.fragments = null;
+          client.fragmentBytes = 0;
+        }
         try {
           client.onMessage?.(JSON.parse(payload.toString("utf8")));
         } catch {
@@ -531,6 +755,7 @@ function createWebSocketClient(socket) {
     },
   };
   socket.on("data", client.consume);
+  socket.on("end", () => socket.destroy());
   socket.on("error", () => socket.destroy());
   socket.on("close", () => {
     if (client.closed) return;
@@ -573,9 +798,12 @@ function rejectUpgrade(socket, status, message) {
   socket.destroy();
 }
 
-function isAuthorized(request) {
-  if (!apiKey) return true;
-  return request.headers.authorization === `Bearer ${apiKey}`;
+function requireApiKey(request) {
+  const actual = Buffer.from(request.headers.authorization ?? "");
+  const expected = Buffer.from(`Bearer ${apiKey}`);
+  if (!apiKey || actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
+    throw new BridgeError(401, "INVALID_API_KEY", "A valid Bearer API key is required.");
+  }
 }
 
 function isLoopback(address) {
@@ -585,10 +813,15 @@ function isLoopback(address) {
 function setCorsHeaders(response) {
   response.setHeader("Access-Control-Allow-Origin", "*");
   response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
-  response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
 }
 
 function sendJson(response, status, payload) {
+  if (response.bridgeRequestId && !response.bridgeTask && status >= 400) {
+    const code = payload.error?.code ?? "INTERNAL_ERROR";
+    try { cloud.event("request_error", { request: response.bridgeRequestId, trace: response.bridgeTraceId, code, layer: errorLayer(code) }); }
+    catch { console.error("[ai-bridge] Unable to record request error."); }
+  }
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
 }
