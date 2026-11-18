@@ -1,5 +1,7 @@
 # AI Bridge
 
+This repository is based on [RenZekta/AI-Bridge](https://github.com/RenZekta/AI-Bridge) and is distributed under the [GNU Affero General Public License v3.0](LICENSE).
+
 AI Bridge turns a tab you are already logged into on an AI chat website into a **local, OpenAI-compatible** endpoint for a local IDE or agent. It deliberately keeps the two halves on your computer:
 
 ```text
@@ -23,9 +25,9 @@ This project borrows the practical idea of a web-chat-to-OpenAI gateway from [ge
 ## Install
 
 1. Install Node.js 20 or newer.
-2. From this directory, start the local companion with Run.bat or manually in cmd:
+2. From the repository root, start the local companion in a terminal. On Windows, you can also launch `Run.bat`.
 
-   ```powershell
+   ```sh
    npm start
    ```
 
@@ -129,7 +131,9 @@ prompt-instructions/
 
 ## Development
 
-```powershell
+Use Node.js 22.4 or newer to run the test suite with Node's built-in WebSocket client. The project has no npm dependencies to install.
+
+```sh
 npm test
 ```
 
